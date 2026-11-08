@@ -3,6 +3,8 @@ const $ = (selector) => document.querySelector(selector);
 let state = null, importDraft = null, selectedReport = null, lastAutoReport = null, pendingRunId = null, currentReportRow = null, runSubmitting = false;
 let runStatusId = null, runStartError = '';
 let modelTestContext = null;
+let editingPortfolio = false, detailSaving = false, detailSaveError = false;
+const lookupTimers = new Map(), lookupTasks = new Set();
 const runQuestions = new Map();
 const csrf = $('meta[name="csrf-token"]').content;
 function alertBox(selector) {
@@ -85,8 +87,8 @@ function setForm(id, data) {
     if (element.type === 'checkbox') element.checked = Boolean(value); else element.value = value ?? '';
   }
 }
-const VIEW_ROUTES={desk:'portfolio',portfolio:'portfolio',connections:'connections',preferences:'preferences',automation:'automation',activity:'activity'};
-const HASH_VIEWS={desk:'desk',portfolio:'desk',connections:'connections',preferences:'preferences',automation:'automation',activity:'activity'};
+const VIEW_ROUTES={desk:'portfolio',portfolio:'portfolio',connections:'connections',preferences:'desk',automation:'automation',activity:'activity'};
+const HASH_VIEWS={desk:'desk',portfolio:'desk',connections:'connections',preferences:'desk',automation:'automation',activity:'activity'};
 function viewFromHash(hash) { const key=String(hash||'').replace(/^#/,'').split('?')[0].toLowerCase(); return HASH_VIEWS[key]||null; }
 let currentView='desk';
 function view(name, updateHash=true) {
@@ -112,10 +114,12 @@ function sizeReportFrame() {
 }
 async function openReport(id, scroll=false) {
   selectedReport=id; const encoded=encodeURIComponent(id);
-  const frame=$('#report-frame'); frame.style.height=''; frame.src=`/reports/${encoded}?embed=true`;
+  const frame=$('#report-frame'); frame.style.height=''; frame.dataset.reportSrc=`/reports/${encoded}?embed=true`;
+  if($('#report-card').open||scroll) frame.src=frame.dataset.reportSrc;
   $('#report-open').href=`/reports/${encoded}`;
   $('#report-text').href=`/reports/${encoded}?plain=true`;
   $('#report-card').hidden=false;
+  if(scroll) $('#report-card').open=true;
   $('#send-report').hidden=!(state.settings.smtp && state.verified_recipient === state.settings.smtp.recipient);
   $('#report-summary').textContent='Loading conclusions…';
   try { const row=await api(`/api/runs/${encoded}`); if(selectedReport===id) {renderReportSummary(row);renderResearchActivity(row);} if(scroll) $('#report-card').scrollIntoView({behavior:'smooth',block:'start'}); }
@@ -126,7 +130,7 @@ function renderReportSummary(row) {
   currentReportRow=row;updateReportHeading();
   $('#report-summary').replaceChildren();
   $('#report-coverage').textContent='';$('#report-coverage').hidden=true;
-  $('#report-date').textContent=row.result?.metrics?.price_session?`Prices for ${new Date(row.result.metrics.price_session+'T12:00:00').toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'})}`:'';
+  $('#report-date').textContent=dateLabel(row.research_as_of||row.created_at);
 }
 function friendlyEvent(event){
   const verb={search_news:'Researching news',read_article:'Reading an article',get_market_data:'Checking market data',analyst:'Preparing your briefing'}[event.tool]||event.tool;
@@ -159,7 +163,7 @@ async function refreshActivity(rows){
   const running=rows.find(row=>['queued','running'].includes(row.status));const row=rows.find(row=>row.id===selectedTrace)||running||rows[0];
   if(row){select.value=row.id;try{renderResearchActivity(await api(`/api/runs/${encodeURIComponent(row.id)}`));}catch{$('#activity-status').textContent='Trace temporarily unavailable. It will refresh automatically.';}}else renderResearchActivity(null);
   const recent=rows.find(item=>item.id===runStatusId);
-  $('#run-progress').hidden=!running&&!recent&&!runSubmitting&&!runStartError;
+  $('#run-progress').hidden=!running&&recent?.status!=='failed'&&!runSubmitting&&!runStartError;
   if(!runSubmitting)$('#run-progress-text').textContent=running?(running.status==='queued'?'Research queued':'Research in progress'):runStartError|| (recent?(recent.status==='failed'?'Research failed. Inspect the agent trace for details.':'Your briefing is ready.'):'');
 }
 
@@ -183,7 +187,7 @@ function renderReadinessError(message) {
   const error=document.createElement('p');error.className='readiness-grade readiness-fail';error.textContent=String(message||'');box.append(error);
 }
 
-let portfolioDirty = false, editorSnapshot = null, editorVersion = null, activeImportSource = null;
+let portfolioDirty = false, editorSnapshot = null, editorVersion = undefined, activeImportSource = null;
 let pricesBySymbol = new Map(), pricesAsOf = null;
 function editStatus(message) { $('#portfolio-edit-status').textContent=message; }
 function updateDraftProgress() {
@@ -205,27 +209,73 @@ function amount(value, label, optional=false) {
   if (!/^(?:(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?|\.\d+)$/.test(text)) throw new Error(`${label} must be a nonnegative number (for example 1,234.56).`);
   return text.replaceAll(',', '');
 }
+function renderInstrument(row) {
+  const position=row.instrument||{};
+  row.querySelector('.instrument-info').textContent=[position.instrument_name,position.exchange,position.asset_type==='unknown'?null:position.asset_type,position.sector].filter(Boolean).join(' | ');
+}
+function setPortfolioEditing(editing) {
+  editingPortfolio=editing;
+  const editor=$('#portfolio-editor');editor.classList.toggle('is-editing',editing);
+  $('#edit-portfolio').hidden=editing;
+  for(const input of editor.querySelectorAll('input')) input.disabled=!editing;
+  for(const input of editor.querySelectorAll('input')) {
+    let text=input.nextElementSibling;
+    if(!text?.classList.contains('saved-field')) {text=document.createElement('span');text.className='saved-field';input.after(text);}
+    text.textContent=input.id==='portfolio-cash'?exactMoney(priceValue(input.value)||0):input.id==='portfolio-date'?dateLabel(input.value):input.value;
+  }
+  $('#portfolio-edit-status').textContent=editing?(portfolioDirty?'Unsaved draft. Review holdings and cash, then save.':'Edit your holdings and cash, then save or discard.'):'Saved holdings and cash';
+}
 function addHolding(position={}) {
-  const row=document.createElement('tr');
+  const row=document.createElement('tr');row.instrument={...position};row.lookupRevision=0;
   for(const [name,label] of [['symbol','Ticker'],['quantity','Shares']]) {
     const cell=document.createElement('td'), input=document.createElement('input');cell.dataset.label=label;
-    input.dataset.field=name; input.setAttribute('aria-label',label); input.value=position[name] ?? '';
-    if(name==='quantity') input.inputMode='decimal';
-    input.required=true;
-    input.addEventListener('input',markPortfolioDirty);cell.append(input);row.append(cell);
+    input.dataset.field=name;input.setAttribute('aria-label',label);input.value=position[name]??'';input.required=true;
+    if(name==='quantity')input.inputMode='decimal';
+    input.addEventListener('input',()=>{
+      markPortfolioDirty();
+      if(name==='symbol'){
+        const previousSymbol=row.instrument.symbol;row.lookupRevision++;row.instrument={};if(previousSymbol)pricesBySymbol.delete(previousSymbol);renderInstrument(row);row.querySelector('.holding-price').textContent='Unavailable';
+        scheduleLookup(row);
+      }
+    });
+    cell.append(input);row.append(cell);
   }
+  const metadata=document.createElement('small');metadata.className='instrument-info';row.firstElementChild.append(metadata);
   const priceCell=document.createElement('td');priceCell.dataset.label='Price';
   const priceText=document.createElement('span');priceText.className='holding-price';
-  const priceValue=position.price ?? pricesBySymbol.get(position.symbol)?.price;
-  priceText.textContent=formatPrice(priceValue);
-  priceText.title='Price updates automatically from market data. Enter ticker and shares.';
-  priceText.setAttribute('aria-label',`Price for ${position.symbol || 'holding'}: ${formatPrice(priceValue)}`);
+  priceText.textContent=formatPrice(position.price);priceText.title='Supplied automatically from market data.';
   priceCell.append(priceText);row.append(priceCell);
-  if(position.symbol && priceValue!==null && priceValue!==undefined && priceValue!=='') pricesBySymbol.set(position.symbol.toUpperCase(),{...pricesBySymbol.get(position.symbol),...position,price:priceValue,previous_close:position.previous_close ?? pricesBySymbol.get(position.symbol)?.previous_close});
-  const symbolCell=row.firstElementChild;const details=document.createElement('details');details.className='instrument-details';const summary=document.createElement('summary');summary.textContent='Instrument details';details.append(summary);
-  const typeLabel=document.createElement('label');typeLabel.textContent='Type';const type=document.createElement('select');type.dataset.field='asset_type';type.setAttribute('aria-label','Instrument type');for(const [value,text] of [['unknown','Unknown'],['stock','Stock'],['etf','ETF'],['fund','Fund'],['mutual_fund','Mutual fund'],['bond','Bond'],['cash','Cash'],['other','Other']]){const option=document.createElement('option');option.value=value;option.textContent=text;type.append(option);}type.value=position.asset_type || 'unknown';if(!type.value){const option=document.createElement('option');option.value=position.asset_type;option.textContent=position.asset_type;type.append(option);type.value=position.asset_type;}type.addEventListener('change',markPortfolioDirty);typeLabel.append(type);details.append(typeLabel);
-  for(const [name,label] of [['instrument_name','Instrument name'],['exchange','Exchange'],['sector','Sector']]){const fieldLabel=document.createElement('label');fieldLabel.textContent=label;const input=document.createElement('input');input.dataset.field=name;input.value=position[name]??'';input.addEventListener('input',markPortfolioDirty);fieldLabel.append(input);details.append(fieldLabel);}symbolCell.append(details);
-  const cell=document.createElement('td');cell.dataset.label=''; const remove=button('',()=>{row.remove();markPortfolioDirty();});remove.type='button';remove.classList.add('icon-button','delete-holding');remove.setAttribute('aria-label',`Delete ${position.symbol || 'holding'}`);remove.title='Delete holding';const icon=document.createElement('img');icon.src='/static/icons/trash.svg';icon.alt='';icon.className='ui-icon';remove.append(icon);cell.append(remove);row.append(cell);$('#holdings-rows').append(row);
+  const cell=document.createElement('td');const remove=button('',()=>{clearTimeout(lookupTimers.get(row));lookupTimers.delete(row);row.remove();markPortfolioDirty();});
+  remove.type='button';remove.classList.add('icon-button','delete-holding');remove.setAttribute('aria-label',`Delete ${position.symbol||'holding'}`);remove.title='Delete holding';
+  const icon=document.createElement('img');icon.src='/static/icons/trash.svg';icon.alt='';icon.className='ui-icon';remove.append(icon);cell.append(remove);row.append(cell);
+  $('#holdings-rows').append(row);renderInstrument(row);
+}
+function scheduleLookup(row) {
+  clearTimeout(lookupTimers.get(row));
+  lookupTimers.set(row,setTimeout(()=>{lookupTimers.delete(row);enrichRows([row]);},600));
+}
+function enrichRows(rows) {
+  const candidates=rows.filter(row=>row.isConnected&&/^[A-Z0-9.\-^=/]{1,40}$/.test(row.querySelector('[data-field="symbol"]').value.trim().toUpperCase())).map(row=>({row,revision:row.lookupRevision,symbol:row.querySelector('[data-field="symbol"]').value.trim().toUpperCase()}));
+  const task=(async()=>{
+    for(let start=0;start<candidates.length;start+=30){
+      const batch=candidates.slice(start,start+30).filter(({row,revision})=>row.isConnected&&row.lookupRevision===revision);
+      if(!batch.length)continue;
+      for(const {row} of batch)row.querySelector('.instrument-info').textContent='Looking up instrument details...';
+      try{
+        const result=await api('/api/portfolio/enrich',{positions:batch.map(({row,symbol})=>({symbol,quantity:null,asset_type:row.instrument.asset_type||'unknown',...Object.fromEntries(['instrument_name','exchange','sector'].map(key=>[key,row.instrument[key]||null]))}))});
+        batch.forEach(({row,revision,symbol},index)=>{
+          if(!row.isConnected||row.lookupRevision!==revision||row.querySelector('[data-field="symbol"]').value.trim().toUpperCase()!==symbol)return;
+          const position=result.positions[index];if(!position||position.symbol!==symbol)return;
+          row.instrument=position;renderInstrument(row);
+          if(!row.querySelector('.instrument-info').textContent)row.querySelector('.instrument-info').textContent='Instrument details unavailable';
+          pricesBySymbol.set(symbol,{...position});row.querySelector('.holding-price').textContent=formatPrice(position.price);
+        });
+      }catch{
+        for(const {row,revision} of batch)if(row.isConnected&&row.lookupRevision===revision){renderInstrument(row);if(!row.querySelector('.instrument-info').textContent)row.querySelector('.instrument-info').textContent='Instrument details unavailable';}
+      }
+    }
+  })();
+  lookupTasks.add(task);task.finally(()=>lookupTasks.delete(task));return task;
 }
 function priceValue(value){ if(value===null||value===undefined||value==='')return null; return String(value).trim().replace(/^\$\s*/,'').replaceAll(',','') || null; }
 function formatPrice(value){ const numeric=Number(priceValue(value)); return value===null||value===undefined||value===''||!Number.isFinite(numeric)?'—':money.format(numeric); }
@@ -258,23 +308,25 @@ function loadPortfolio(snapshot, draft=false) {
   activeImportSource=draft?'Imported portfolio':null;
   pricesBySymbol=new Map();
   for(const position of editorSnapshot.positions||[]) pricesBySymbol.set(position.symbol,{...position,price:priceValue(position.price),previous_close:priceValue(position.previous_close)});
+  for(const timer of lookupTimers.values())clearTimeout(timer);lookupTimers.clear();
   $('#holdings-rows').replaceChildren();for(const position of editorSnapshot.positions) addHolding(position);
   $('#portfolio-date').value=localDate(editorSnapshot.as_of);$('#portfolio-cash').value=editorSnapshot.cash ?? '';
   portfolioDirty=draft; editorVersion=editableProjection(snapshot);
   const missing=editorSnapshot.positions.filter(p=>p.quantity===null||p.quantity===undefined||p.quantity==='').length;
   editStatus(draft?`Import draft: ${missing} ${missing===1?'holding needs':'holdings need'} shares. Check cash, then save.`:'Saved portfolio. Enter ticker and shares here.');
-  updateDraftProgress();
+  updateDraftProgress();setPortfolioEditing(draft||!snapshot);
+  if(draft)enrichRows([...$('#holdings-rows').children]);
 }
 function collectPortfolio() {
   const positions=[], seen=new Set();
   for(const row of $('#holdings-rows').children) {
-    const data={};for(const input of row.querySelectorAll('input,select')) data[input.dataset.field]=input.value.trim();
+    const data={...row.instrument};for(const input of row.querySelectorAll('input[data-field]')) data[input.dataset.field]=input.value.trim();
     data.symbol=data.symbol.toUpperCase();
     if(!/^[A-Z0-9.\-^=/]{1,40}$/.test(data.symbol)) throw new Error('Provide a valid symbol for every holding.');
-    if(seen.has(data.symbol) && !['CASH','USD'].includes(data.symbol) && data.asset_type.toLowerCase()!=='cash') throw new Error(`Duplicate symbol ${data.symbol}; combine lots first.`);
-    seen.add(data.symbol);const saved=pricesBySymbol.get(data.symbol)||{};
+    if(seen.has(data.symbol) && !['CASH','USD'].includes(data.symbol) && (data.asset_type||'unknown').toLowerCase()!=='cash') throw new Error(`Duplicate symbol ${data.symbol}; combine lots first.`);
+    seen.add(data.symbol);const saved=row.instrument.symbol===data.symbol?(pricesBySymbol.get(data.symbol)||row.instrument):{};
     data.quantity=amount(data.quantity,`${data.symbol} shares`);data.price=priceValue(saved.price);data.previous_close=priceValue(saved.previous_close);data.price_as_of=saved.price_as_of||null;data.price_session=saved.price_session||null;data.price_source=saved.price_source||null;
-    data.sector=data.sector||null;data.asset_type=(data.asset_type||'unknown').toLowerCase();positions.push(data);
+    for(const key of ['instrument_name','exchange','sector'])data[key]=data[key]||null;data.asset_type=(data.asset_type||'unknown').toLowerCase();positions.push(data);
   }
   const date=new Date($('#portfolio-date').value);if(!Number.isFinite(date.getTime())) throw new Error('Provide a snapshot date and time.');
   return {...editorSnapshot,as_of:date.toISOString(),positions,cash:amount($('#portfolio-cash').value,'Cash balance')};
@@ -308,7 +360,7 @@ function renderAllocation(snapshot) {
   if(!snapshot||total<=0){chart.style.background='';chart.setAttribute('aria-label','No known portfolio value to chart');$('#allocation-caption').textContent=snapshot?'Add shares to see allocation.':'Save holdings to see your allocation.';rows.innerHTML='<tr><td colspan="3">No known allocation yet</td></tr>';$('#allocation-note').textContent=omittedNames.length?`${exclusion} from known value and allocation. ${priceNote()}`:priceNote();return;}
   const parts=[...valued];if(cash>0)parts.push({name:'Cash',value:cash});parts.sort((a,b)=>b.value-a.value);
   const tableParts=parts.slice(0,7);if(parts.length>7)tableParts.push({name:`${parts.length-7} other positions`,value:parts.slice(7).reduce((sum,part)=>sum+part.value,0)});
-  const colors=['#184c44','#319982','#d69a57','#6b84a1','#b37664','#8e8e68','#a7bdad','#d8d1bd'];let offset=0;const stops=[];
+  const colors=['#2563EB','#0E7490','#7C3AED','#15803D','#475569','#BE185D','#4338CA','#64748B'];let offset=0;const stops=[];
   tableParts.forEach((part,index)=>{const angle=part.value/total*360;stops.push(`${colors[index]} ${offset}deg ${offset+angle}deg`);offset+=angle;const tr=document.createElement('tr');const name=document.createElement('th');name.scope='row';name.textContent=part.name;name.title=part.name;name.style.setProperty('--slice-color',colors[index]);const value=document.createElement('td');const partFigure=displayFigure(part.value);value.textContent=partFigure.text;value.title=partFigure.exact;const share=document.createElement('td');share.textContent=pct.format(part.value/total);share.title=`${pct.format(part.value/total)} of portfolio value`;tr.append(name,value,share);rows.append(tr);});
   chart.style.background=`conic-gradient(${stops.join(',')})`;
   chart.setAttribute('aria-label',`Portfolio value including cash ${exactMoney(total)}. ${tableParts.map(part=>`${part.name} ${pct.format(part.value/total)} of portfolio value`).join('; ')}. ${omittedNames.length?exclusion+'.':''}`);
@@ -321,16 +373,10 @@ function showSearchFields(provider){for(const name of Object.keys(SEARCH_PROVIDE
 
 function updateResearchReadiness() {
   if(!state)return;
-  const settings=state.settings, tests=state.connection_tests||{}, hasPortfolio=Boolean(state.snapshot);
+  const settings=state.settings, tests=state.connection_tests||{};
   const context=JSON.stringify([settings.model,settings.model_enabled,state.secrets?.model_api_key]);
   if(modelTestContext!==context){const results=$('#readiness-state');results.hidden=true;results.replaceChildren();delete results.dataset.testedAt;delete results.dataset.testing;modelTestContext=context;}
-  const searchConfigured=settings.search_provider==='keyless'||(SEARCH_PROVIDERS[settings.search_provider]&&state.secrets_present[`${settings.search_provider}_api_key`])||(settings.search_provider!=='disabled'&&(settings.primary_feeds_enabled||settings.sec_company_filings_enabled||settings.ticker_news_enabled));
-  const modelConfigured=settings.model_enabled&&state.secrets_present.model_api_key;
   const sourceTests=tests.search?.sources;
-  const testedWorkingSources=Object.values(sourceTests||{}).filter(item=>['passed','empty'].includes(item.status)).length;
-  $('#cap-measures').textContent=hasPortfolio?'Ready from saved holdings and cash':'Add holdings or cash';
-  $('#cap-events').textContent=!searchConfigured?'Unavailable | set up search':testedWorkingSources?`${testedWorkingSources} sources available${tests.search.status==='partial'?' | some sources need attention':''}`:tests.search?.status==='failed'||tests.search?.status==='partial'?'No tested source available | review source checks':'Search configured | test it';
-  $('#cap-model').textContent=!modelConfigured?'Unavailable | add a model':tests.model?.status==='passed'?`Model tested ${dateLabel(tests.model.tested_at)}`:tests.model?.status==='failed'?'Model test failed | retry':'Model configured | test it';
   $('#model-test-state').textContent=tests.model?.status==='passed'?`Last test passed ${dateLabel(tests.model.tested_at)}`:tests.model?.status==='failed'?`Last test failed ${dateLabel(tests.model.tested_at)}`:'Connection not tested';
   $('#search-test-state').textContent=sourceTests?`Source checks ${dateLabel(tests.search.tested_at)} | see individual outcomes`:'Sources not tested';
   const chips=$('#source-states');chips.replaceChildren();
@@ -353,9 +399,6 @@ function updateResearchReadiness() {
   else connectionStatus.textContent=readiness?.state==='ready'?'Connections ready for research.':'Connections will be checked before research starts.';
   if(!readiness?.issues?.length&&readiness?.state==='needs_check'){const line=document.createElement('p');line.textContent='Your connections will be checked automatically before the first run.';connectionStatus.append(line);}
   if(tests.model?.steps&&!$('#readiness-state').dataset.testing&&(!$('#readiness-state').dataset.testedAt||new Date(tests.model.tested_at)>new Date($('#readiness-state').dataset.testedAt)))renderReadiness(tests.model);
-  const wantsIdeas=$('#run-form').elements.include_suggestions.checked;
-  const warning=$('#question-readiness');warning.hidden=!wantsIdeas||Boolean(settings.investment_profile);
-  if(!warning.hidden)warning.textContent='Adjustment ideas need a complete investment profile in Preferences.';
 
 }
 
@@ -459,26 +502,26 @@ async function refresh(populate=false) {
   const researchDate=$('#run-form').elements.research_date;researchDate.max=state.research_today||'';if(!researchDate.value)researchDate.value=state.research_today||'';
   if(!portfolioDirty && editableProjection(snapshot)!==editorVersion) loadPortfolio(snapshot);
   pricesAsOf=state.prices_as_of||pricesAsOf;
-  if(snapshot){const serverPrices={};for(const position of snapshot.positions||[]){if(position.price!==null&&position.price!==undefined)serverPrices[position.symbol]={price:position.price,previous_close:position.previous_close};}applyQuotes(serverPrices);}
+  if(snapshot){const serverPrices={};for(const position of snapshot.positions||[]){if(position.price!==null&&position.price!==undefined)serverPrices[position.symbol]={...position};}applyQuotes(serverPrices);}
   updatePricesLabel();
   renderAllocation(snapshot);
   $('#snapshot-time').textContent=snapshot ? `Saved ${dateLabel(snapshot.as_of)} | ${snapshot.positions.length} holdings` : 'Add holdings manually or import CSV or Excel.';
   $('#source-label').textContent=snapshot ? 'LAST SAVED PORTFOLIO' : 'NO PORTFOLIO SAVED';
   $('#top-status').textContent=snapshot ? `Positions as of ${dateLabel(snapshot.as_of)}` : 'Add positions to begin';
   $('#next-run').textContent=state.next_run ? `Next scheduled run: ${dateLabel(state.next_run)}` : 'Research available on demand';
-  const latest=state.history[0], latestSummary=state.history.find(row=>['success','partial'].includes(row.status)&&row.summary); $('#latest-research').hidden=!latestSummary;$('#latest-status').textContent=latestSummary?.summary||'';
+  const latest=state.history.find(row=>['success','partial'].includes(row.status));
   const active=state.history.some(row => ['queued','running'].includes(row.status));
-  $('#run-button').disabled=active||runSubmitting; $('#run-button').textContent=runSubmitting?'Checking connections…':active?'Research in progress…':'Run research →';
+  $('#run-button').disabled=active||runSubmitting||detailSaving||detailSaveError; $('#run-button-label').textContent=runSubmitting?'Checking connections...':active?'Research in progress...':'Run research';
   $('#run-email-wrap').hidden=!(s.smtp && state.verified_recipient === s.smtp.recipient);
+  $('#run-email-wrap').closest('details').hidden=$('#run-email-wrap').hidden;
   $('#email-state').textContent=s.smtp ? (state.verified_recipient===s.smtp.recipient ? `Verified: ${s.smtp.recipient}` : 'Next: send a verification email and enter the code.') : 'First save your mail server settings.';
   updateResearchReadiness();
   $('#logout').hidden=!state.server;
   if (populate) {
     setForm('#model-form',{...s.model,enabled:s.model_enabled});
-    setForm('#research-form',s); setForm('#preferences-form',s); setForm('#email-form',s.smtp);
+    setForm('#research-form',s);setForm('#run-form',{report_length:s.report_length}); setForm('#email-form',s.smtp);
     for(const name of ['google_news','nasdaq','bing_news']){const box=$('#research-form').elements.namedItem(`news_source_${name}`);if(box)box.checked=(s.news_feed_sources||[]).includes(name);}
     setForm('#schedule-form',{...s.schedule,scheduled_email:s.scheduled_email});
-    if (s.investment_profile) {const targets={...s.investment_profile.allocation_targets};for(const name of ['stocks','bonds','cash']){const input=$('#profile-form').elements.namedItem(`target_${name}`);input.value=targets[name]??'';delete targets[name];}setForm('#profile-form',{...s.investment_profile,allocation_targets:Object.keys(targets).length?JSON.stringify(targets,null,2):'', restrictions:(s.investment_profile.restrictions||[]).join('\n')});}
     if(snapshot) $('#run-source').value='stored';
     const mail=s.smtp;const mailProvider=mail?.host==='smtp.gmail.com'?'gmail':mail?.host==='smtp.mail.me.com'?'icloud':mail?'custom':'gmail';$('#mail-provider').value=mailProvider;setMailProvider(true);
     const now=new Date(); now.setMinutes(now.getMinutes()-now.getTimezoneOffset()); $('#import-form').elements.as_of.value=now.toISOString().slice(0,16);
@@ -498,7 +541,7 @@ async function refresh(populate=false) {
   updateReportHeading();
   await refreshActivity(state.history);
   if(latest && ['success','partial'].includes(latest.status) && latest.id!==lastAutoReport && !selectedReport) {openReport(latest.id); lastAutoReport=latest.id;}
-  if(pendingRunId){const pending=state.history.find(row=>row.id===pendingRunId);if(pending&&['success','partial','failed'].includes(pending.status)){pendingRunId=null;if(pending.status!=='failed'&&selectedReport!==pending.id)await openReport(pending.id,true);}}
+  if(pendingRunId){const pending=state.history.find(row=>row.id===pendingRunId);if(pending&&['success','partial','failed'].includes(pending.status)){pendingRunId=null;if(pending.status!=='failed'&&selectedReport!==pending.id){$('#report-card').open=false;await openReport(pending.id);}}}
 }
 async function refreshQuotes() {
   if(portfolioDirty || document.hidden || !state || !state.snapshot) return;
@@ -516,12 +559,22 @@ function secretEditing(){
   if(active&&active.matches&&active.matches('input[type="password"]'))return true;
   return SECRET_FIELDS.some(spec=>{const form=$(spec.form);if(!form||!form.elements)return false;const input=form.elements.namedItem(spec.field);return Boolean(input&&(input.dataset.editing==='true'||document.activeElement===input));});
 }
-function shouldPausePolling(){return portfolioDirty||secretEditing();}
+function shouldPausePolling(){return editingPortfolio||portfolioDirty||secretEditing();}
 async function poll(populate=false){
   try{await refresh(populate);pollFailed=false;setPollStatus('');}
   catch(error){if(!pollFailed){pollFailed=true;setPollStatus(`Live updates are paused. ${error.message}`);}}
 }
 async function save(body, quiet=false) {for(const key of state.externally_managed) delete body[key];if(!Object.keys(body).length)throw new Error('These settings are managed by your deployment environment.');await api('/api/settings',body); await refresh(); if(!quiet) notice('Settings saved.'); }
+async function persistDetail() {
+  if(detailSaving)return;
+  const selector=$('#run-form').elements.report_length, status=$('#detail-save-status');
+  detailSaving=true;detailSaveError=false;selector.disabled=true;status.hidden=false;status.textContent='Saving briefing detail...';
+  $('#run-button').disabled=true;
+  try{await save({report_length:selector.value},true);status.textContent='Briefing detail saved.';}
+  catch(error){detailSaveError=true;status.textContent=`Could not save briefing detail: ${error.message}`;
+    const retry=button('Retry',persistDetail);retry.type='button';status.append(' ',retry);
+  }finally{detailSaving=false;selector.disabled=state.externally_managed.includes('report_length');await refresh();}
+}
 const PROVIDER_LABELS={openai:'OpenAI',anthropic:'Anthropic',custom:'Custom OpenAI-compatible'};
 const SECRET_FIELDS=[
   {form:'#model-form',field:'key',key:'model_api_key',test:'model',title:'model'},
@@ -580,10 +633,12 @@ function renderSecretStorage() {
 if($('#login-form')) {
   $('#login-form').addEventListener('submit',action(async()=>{await api('/api/login',values('#login-form')); window.location.reload();}));
 } else {
-  $('#run-form').elements.question.closest('label').after($('#question-readiness'));
   $('#run-form').elements.question.addEventListener('input',updateResearchReadiness);
-  $('#run-form').elements.include_suggestions.addEventListener('change',updateResearchReadiness);
   $('.research-card [data-view="connections"]').addEventListener('click',()=>{$('#research-setup').scrollIntoView({behavior:'smooth'});});
+  $('#report-card').addEventListener('toggle',()=>{if($('#report-card').open){const frame=$('#report-frame');if(frame.dataset.reportSrc&&frame.getAttribute('src')!==frame.dataset.reportSrc)frame.src=frame.dataset.reportSrc;sizeReportFrame();}});
+  $('#edit-portfolio').addEventListener('click',()=>{setPortfolioEditing(true);$('#holdings-rows input')?.focus();});
+  $('.overview-edit').addEventListener('click',()=>setPortfolioEditing(true));
+  $('#run-form').elements.report_length.addEventListener('change',action(persistDetail));
   const reportFrame=$('#report-frame'); if(reportFrame) reportFrame.addEventListener('load',sizeReportFrame);
   window.addEventListener('resize',()=>{if(reportFrame&&!$('#report-card').hidden)sizeReportFrame();});
   window.addEventListener('hashchange',()=>{const target=viewFromHash(window.location.hash);if(target&&target!==currentView)view(target,false);});
@@ -601,12 +656,13 @@ if($('#login-form')) {
   }));
   $('#logout').addEventListener('click',action(async()=>{await api('/api/logout',{});window.location.reload();}));
   $('#run-form').addEventListener('submit',action(async()=>{
-    if(runSubmitting||runActive())return;
+    if(runSubmitting||runActive()||detailSaving)return;
+    if(detailSaveError)throw new Error('Save the briefing detail choice before starting research.');
     if(portfolioDirty){view('desk');$('#portfolio-editor').scrollIntoView({behavior:'smooth'});throw new Error('Save or discard your portfolio edits before starting a briefing.');}
-    runSubmitting=true;runStartError='';runStatusId=null;$('#run-button').disabled=true;$('#run-button').textContent='Checking connections…';$('#run-progress').hidden=false;$('#run-progress-text').textContent='Checking connections…';$('#notice').hidden=true;
+    runSubmitting=true;runStartError='';runStatusId=null;$('#run-button').disabled=true;$('#run-button-label').textContent='Checking connections...';$('#run-progress').hidden=false;$('#run-progress-text').textContent='Checking connections…';$('#notice').hidden=true;
     try{
-      const data=values('#run-form');data.research_date=data.research_date||null;data.include_suggestions=checked('#run-form','include_suggestions');data.send_email=checked('#run-form','send_email');
-      const run=await api('/api/runs',data);pendingRunId=run.run_id;runStatusId=run.run_id;runQuestions.set(run.run_id,String(data.question||''));selectedReport=null;$('#run-form').elements.include_suggestions.checked=false;
+      const data=values('#run-form');data.research_date=data.research_date||null;delete data.report_length;data.include_suggestions=false;data.send_email=checked('#run-form','send_email');
+      const run=await api('/api/runs',data);pendingRunId=run.run_id;runStatusId=run.run_id;runQuestions.set(run.run_id,String(data.question||''));selectedReport=null;$('#report-card').open=false;
     }catch(error){runStartError=error.message;}
     finally{runSubmitting=false;await refresh();}
   }));
@@ -626,22 +682,20 @@ if($('#login-form')) {
     view('desk');$('#portfolio-editor').scrollIntoView({behavior:'smooth'});focusFirstMissing();notice('Portfolio imported as a draft. Review your holdings and cash, then save.');
   }));
   $('#confirm-import').addEventListener('click',()=>{view('desk');$('#portfolio-editor').scrollIntoView({behavior:'smooth'});focusFirstMissing();});
-  $('#add-holding').addEventListener('click',()=>{addHolding();markPortfolioDirty();});
-  $('#fill-details').addEventListener('click',action(async()=>{
-    const rows=[...$('#holdings-rows').children];if(!rows.length)throw new Error('Add a ticker or import holdings first.');
-    if(rows.length>30)throw new Error('Fill details supports up to 30 holdings at a time. Review a smaller draft.');
-    const positions=rows.map(row=>{const item={};for(const input of row.querySelectorAll('input,select'))item[input.dataset.field]=input.value.trim();item.symbol=item.symbol.toUpperCase();item.quantity=item.quantity?amount(item.quantity,`${item.symbol} shares`):null;const known=pricesBySymbol.get(item.symbol)||{};item.price=priceValue(known.price);item.previous_close=priceValue(known.previous_close);item.price_as_of=known.price_as_of||null;item.price_session=known.price_session||null;item.price_source=known.price_source||null;for(const field of ['instrument_name','exchange','sector'])item[field]=item[field]||null;return item;});
-    const control=$('#fill-details');control.disabled=true;notice('Looking up missing instrument details and available prices.');
-    try{const result=await api('/api/portfolio/enrich',{positions});result.positions.forEach((position,index)=>{const row=rows[index];for(const [field,value] of Object.entries(position)){const input=[...row.querySelectorAll('input,select')].find(element=>element.dataset.field===field);if(input&&value!==null&&value!==undefined)input.value=value;}if(position.price!==null&&position.price!==undefined){pricesBySymbol.set(position.symbol,{...position,price:position.price,previous_close:position.previous_close});const cell=row.querySelector('.holding-price');if(cell)cell.textContent=formatPrice(position.price);}});markPortfolioDirty();const names=result.changes.map(item=>`${item.symbol}: ${item.fields.join(', ')}${item.price_as_of?` (daily close ${item.price_as_of})`:''}${item.source?` via ${item.source}`:''}`);notice(names.length?`Added ${names.join('; ')}. Review and save your portfolio. Quantity is never inferred.`:'No additional details were available. Check ticker symbols or enter values manually.');}
-    finally{control.disabled=false;}
-  }));
+  $('#add-holding').addEventListener('click',()=>{addHolding();setPortfolioEditing(true);markPortfolioDirty();});
   $('#portfolio-date').addEventListener('input',markPortfolioDirty);
   $('#portfolio-cash').addEventListener('input',markPortfolioDirty);
   $('#discard-portfolio').addEventListener('click',()=>loadPortfolio(state.snapshot));
   $('#portfolio-form').addEventListener('submit',action(async()=>{
+    const saveButton=$('#save-portfolio');if(saveButton.disabled)return;
+    const controls=[...$('#portfolio-form').querySelectorAll('input,button')];for(const control of controls)control.disabled=true;
+    try{
+    const scheduled=[...lookupTimers.keys()];for(const timer of lookupTimers.values())clearTimeout(timer);lookupTimers.clear();
+    if(scheduled.length)enrichRows(scheduled);await Promise.allSettled([...lookupTasks]);
     const snapshot=collectPortfolio();const saved=await api('/api/portfolio',{snapshot});
     loadPortfolio(saved);$('#confirm-import').hidden=true;$('#import-preview').hidden=true;
     await refresh();$('#run-source').value='stored';notice('Holdings and cash saved. Your portfolio is ready for a briefing.');
+    }finally{for(const control of controls)control.disabled=false;setPortfolioEditing(editingPortfolio);}
   }));
   window.addEventListener('beforeunload',event=>{if(portfolioDirty){event.preventDefault();event.returnValue='';}});
   $('#model-provider').addEventListener('change',()=>{const presets={openai:['','https://api.openai.com/v1'],anthropic:['','https://api.anthropic.com'],custom:['','https://api.openai.com/v1']};const [model,base_url]=presets[$('#model-provider').value];setForm('#model-form',{model,base_url});});
@@ -673,8 +727,6 @@ if($('#login-form')) {
     updateSecAvailability();
   });
   $('#research-form').elements.ticker_news_enabled.addEventListener('change',()=>{$('#news-source-fields').hidden=!checked('#research-form','ticker_news_enabled');});
-  $('#preferences-form').addEventListener('submit',action(async()=>{const data=values('#preferences-form');for(const key of ['position_review_threshold_pct','sector_review_threshold_pct','retention_days']) data[key]=Number(data[key]);await save(data);}));
-  $('#profile-form').addEventListener('submit',action(async()=>{const data=values('#profile-form');let targets={};try{targets=data.allocation_targets.trim()?JSON.parse(data.allocation_targets):{};}catch{throw new Error('Other targets must be a JSON object, for example {"real_estate":10}.');}if(!targets||Array.isArray(targets)||typeof targets!=='object')throw new Error('Other targets must be a JSON object.');for(const name of ['stocks','bonds','cash']){const raw=data[`target_${name}`].trim();delete data[`target_${name}`];if(raw)targets[name]=Number(raw);}if(!Object.keys(targets).length||Object.values(targets).some(value=>!Number.isFinite(value)||value<0||value>100)||Object.values(targets).reduce((sum,value)=>sum+value,0)>100)throw new Error('Enter targets between 0% and 100% that total no more than 100%.');data.allocation_targets=targets;data.restrictions=data.restrictions.split('\n').map(s=>s.trim()).filter(Boolean);await save({investment_profile:data});}));
   $('#mail-provider').addEventListener('change',()=>setMailProvider());
   $('#email-form').addEventListener('submit',action(async()=>{
     const data=values('#email-form');const provider=data.mail_provider;delete data.mail_provider;

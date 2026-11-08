@@ -86,7 +86,7 @@ class AnalysisRequest(Contract):
     include_suggestions: bool = False
     investment_profile: dict[str, Any] | None = None
     benchmark: str = Field(default="SPY", max_length=40)
-    report_length: Literal["brief", "detailed"] = "brief"
+    report_length: Literal["brief", "detailed"] = "detailed"
     max_searches: int = Field(default=100, ge=0, le=500)
     max_model_calls: int = Field(default=64, ge=1, le=256)
     max_tool_calls: int = Field(default=200, ge=0, le=1000)

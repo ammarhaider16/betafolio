@@ -23,6 +23,10 @@ Exa highlights, Perplexity extracted excerpts, and Tavily content go directly to
 
 Each search provider works independently; additional news feeds are optional. Tavily uses basic general search, with relevant passages placed before extracted article text. Search requests have a longer allowance than headline feeds. A briefing that fails to obtain news sources is marked incomplete rather than reported as fully researched.
 
+Saved holdings are read-only until you choose **Edit holdings & cash**. Imports open an editable draft; ticker changes and imports look up instrument details automatically. Prices are always supplied by market data. Save or discard edits before research.
+
+Choose **Briefing detail** in **Research this portfolio**. Detailed is the default; your saved choice also applies to scheduled research. The latest briefing starts collapsed and expands when you open it.
+
 Start a run from **Portfolio**, follow its status, and return to its briefing in research history. Open **Activity** to select a run and review the observed agent calls and outcomes. Activity traces do not include private model reasoning. Optional scheduling and email are configured separately.
 
 Choose a **Research date** to test an earlier briefing using your saved share quantities and cash. Past dates use the end of that day in your configured timezone, historical closing prices, and dated research available up to that point. Reports identify the research date separately from when the run executed; your saved portfolio and live prices are unchanged. This is best-effort historical research, not a hindsight-free backtest: webpages, provider prices and model knowledge can contain later revisions. Undated news and current-only data are excluded rather than substituted. Some sources cannot supply older material.

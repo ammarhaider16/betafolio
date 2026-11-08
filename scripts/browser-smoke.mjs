@@ -44,7 +44,7 @@ try {
   await evaluate(`document.querySelector('#run-form').elements.research_date.value='2020-01-03';refresh()`);
   if(!(await evaluate(`values('#run-form').research_date==='2020-01-03'`))) throw new Error('Status polling overwrote the selected research date');
   await evaluate(`document.querySelector('#run-form').elements.research_date.value=state.research_today`);
-  if(!(await evaluate('document.title.includes("Betafolio") && !document.querySelector(".brand-icon") && Boolean(document.querySelector("#fill-details"))'))) throw new Error('Betafolio branding or draft enrichment action is missing');
+  if(!(await evaluate('document.title.includes("Betafolio") && !document.querySelector(".brand-icon") && !document.querySelector("#fill-details") && !document.querySelector("#view-preferences")'))) throw new Error('Betafolio branding or draft enrichment action is missing');
   if(!(await evaluate('!state.settings.sec_company_filings_enabled && !document.querySelector("#research-form input[name=sec_contact]").closest("details:not(#research-setup)") && document.querySelector("#sec-availability").textContent.includes("off")'))) throw new Error('Fresh SEC availability and contact must be visible beside its setting');
   await evaluate(`document.querySelector('#research-form input[name=sec_contact]').value='Owner owner@example.com';document.querySelector('#research-form input[name=sec_contact]').dispatchEvent(new Event('input'));`);
   if(!(await evaluate('document.querySelector("#research-form input[name=sec_company_filings_enabled]").checked'))) throw new Error('First valid SEC contact did not enable filings');
@@ -77,12 +77,26 @@ try {
   if(!optional) throw new Error('Use a fresh smoke data directory with optional integrations disabled');
   await evaluate("api('/api/settings',{search_provider:'disabled',primary_feeds_enabled:false,model_enabled:false}).then(()=>refresh())");
   await evaluate('document.querySelector("#run-form").requestSubmit()');
+  await waitFor('!document.querySelector("#report-card").hidden && !pendingRunId');
+  if(await evaluate('document.querySelector("#report-card").open')) throw new Error('Completed run expanded the briefing');
+  await evaluate('document.querySelector("#report-card > summary").click()');
   await waitFor('Boolean(document.querySelector("#report-frame")?.getAttribute("src"))');
   if(!(await evaluate('Boolean(document.querySelector("#report-card").compareDocumentPosition(document.querySelector("#portfolio-editor")) & Node.DOCUMENT_POSITION_FOLLOWING)'))) throw new Error('Report is below the portfolio editor');
   await waitFor('Boolean(document.querySelector("#report-frame").contentDocument?.body?.textContent.trim())');
   await evaluate('document.querySelector("#report-card").hidden=true');
   await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false}).then(data=>writeFile('.tools/dashboard.png',Buffer.from(data.data,'base64')));
-  if(await evaluate('Boolean(document.querySelector("#preferences-form [name=max_searches]"))')) throw new Error('Technical limits should not appear in preferences');
+  if(await evaluate('Boolean(document.querySelector("#preferences-form"))')) throw new Error('Preferences still appears');
+  // Detail selection persists through the real settings API; a failure blocks research until retry.
+  await evaluate(`document.querySelector('#run-form').elements.report_length.value='brief';document.querySelector('#run-form').elements.report_length.dispatchEvent(new Event('change'))`);
+  await waitFor('!detailSaving && state.settings.report_length === "brief"');
+  await evaluate(`window.smokeDetailApi=window.api;window.api=async(...args)=>{if(args[0]==='/api/settings')throw new Error('Simulated save failure');return window.smokeDetailApi(...args);};document.querySelector('#run-form').elements.report_length.value='detailed';document.querySelector('#run-form').elements.report_length.dispatchEvent(new Event('change'))`);
+  await waitFor('!detailSaving && detailSaveError');
+  if(!(await evaluate('document.querySelector("#run-button").disabled'))) throw new Error('Research enabled after failed detail save');
+  await evaluate(`window.api=window.smokeDetailApi;delete window.smokeDetailApi;document.querySelector('#detail-save-status button').click()`);
+  await waitFor('!detailSaving && !detailSaveError && state.settings.report_length === "detailed"');
+  // Mock only market lookups for deterministic browser coverage, keeping draft/save APIs real.
+  await evaluate(`window.smokeMarketApi=window.api;window.api=async(...args)=>args[0]==='/api/portfolio/enrich'?{positions:args[1].positions.map(p=>({...p,asset_type:'stock',instrument_name:p.symbol+' Company',exchange:'NASDAQ',sector:'Technology',price:'125.50',previous_close:'124',price_session:'2026-11-06',price_as_of:'2026-11-06T21:00:00Z',price_source:'smoke'})),changes:[],unresolved:[]}:window.smokeMarketApi(...args)`);
+
   await evaluate('document.querySelector(".nav[data-view=connections]").click()');
   const files=await send('DOM.getDocument');
   const input=await send('DOM.querySelector',{nodeId:files.root.nodeId,selector:'#import-form input[type=file]'});
@@ -92,6 +106,8 @@ try {
   await waitFor('portfolioDirty && document.querySelector("#holdings-rows").children.length === 2');
   if(!(await evaluate('Array.from(document.querySelectorAll("#holdings-rows input[data-field=quantity]")).every(field=>Number(field.value)>0)'))) throw new Error('Ticker/quantity import did not preserve share counts');
   if(!(await evaluate('/ready to save/i.test(document.querySelector("#draft-progress").textContent)'))) throw new Error('Valid import draft is not ready to save');
+  await waitFor('lookupTasks.size === 0');
+  if(!(await evaluate('[...document.querySelectorAll(".instrument-info")].every(el=>el.textContent.includes("Company")) && !document.querySelector("[data-field=price]")'))) throw new Error('Automatic metadata or display-only prices failed');
   const initialRuns=await evaluate('state.history.length');
   await evaluate('document.querySelector("#run-form").requestSubmit()');
   await waitFor('document.querySelector("#notice").textContent.includes("Save or discard")');
@@ -105,14 +121,51 @@ try {
   await waitFor('state.snapshot?.source === "manual" && !portfolioDirty');
   const saved=await evaluate('editableProjection(state.snapshot)');
   if(!(await evaluate('state.snapshot.cash === "2345.67" && state.snapshot.positions.length === 3 && state.snapshot.positions[2].symbol === "MSFT"'))) throw new Error('Saved edits do not match draft');
+  if(await evaluate('editingPortfolio')) throw new Error('Save did not return to read-only mode');
+  await evaluate('document.querySelector("#edit-portfolio").click()');
   await evaluate(`document.querySelector('#portfolio-cash').value='77';document.querySelector('#portfolio-cash').dispatchEvent(new Event('input'));refresh();`);
   await waitFor('state !== null');
   if(await evaluate('document.querySelector("#portfolio-cash").value') !== '77') throw new Error('Refresh overwrote unsaved cash');
   await evaluate('document.querySelector("#discard-portfolio").click()');
+  if(await evaluate('editingPortfolio || portfolioDirty')) throw new Error('Discard did not restore read-only saved holdings');
+  await evaluate('window.api=window.smokeMarketApi;delete window.smokeMarketApi');
   await send('Page.reload');
   await pause(350);
   await waitFor('typeof state !== "undefined" && state?.snapshot?.source === "manual" && !portfolioDirty');
   if(await evaluate('editableProjection(state.snapshot)') !== saved) throw new Error('Saved portfolio changed on reload');
+  if(!(await evaluate('!editingPortfolio && document.querySelector("#run-form").elements.report_length.value === "detailed" && !document.querySelector("#report-card").open'))) throw new Error('Reload did not restore read-only holdings, saved detail, and collapsed briefing');
+  // Deferred lookups must never overwrite a newer ticker, quantities, or a discarded draft.
+  const lookupSafety=await evaluate(`(async()=>{
+    const original=window.api, snapshot=structuredClone(state.snapshot), pending=[];
+    window.api=async(...args)=>args[0]==='/api/portfolio/enrich'?new Promise(resolve=>pending.push({positions:args[1].positions,resolve})):original(...args);
+    const finish=(request,price)=>request.resolve({positions:request.positions.map(p=>({...p,instrument_name:p.symbol+' resolved',price,asset_type:'stock'}))});
+    const change=(row,symbol)=>{const input=row.querySelector('[data-field=symbol]');input.value=symbol;input.dispatchEvent(new Event('input'));clearTimeout(lookupTimers.get(row));lookupTimers.delete(row);};
+    try{
+      setPortfolioEditing(true);const row=document.querySelector('#holdings-rows').firstElementChild;
+      change(row,'OLD');const old=enrichRows([row]);change(row,'NEW');row.querySelector('[data-field=quantity]').value='9';const newer=enrichRows([row]);
+      finish(pending[1],'222');await newer;finish(pending[0],'111');await old;
+      const latestWins=row.instrument.symbol==='NEW'&&row.instrument.price==='222'&&row.querySelector('[data-field=quantity]').value==='9';
+      change(row,'LATE');const late=enrichRows([row]);loadPortfolio(snapshot);finish(pending[2],'999');await late;
+      const discardSafe=!editingPortfolio&&!portfolioDirty&&collectPortfolio().positions[0].symbol===snapshot.positions[0].symbol&&!pricesBySymbol.has('LATE');
+      const sizes=[];window.api=async(...args)=>{if(args[0]!=='/api/portfolio/enrich')return original(...args);sizes.push(args[1].positions.length);return {positions:args[1].positions.map(p=>({...p,instrument_name:p.symbol+' resolved'}))};};
+      loadPortfolio({...snapshot,positions:Array.from({length:31},(_,i)=>({symbol:'T'+i,quantity:'1'}))},true);await Promise.all([...lookupTasks]);
+      const batched=sizes.length===2&&sizes[0]===30&&sizes[1]===1;
+      window.api=async(...args)=>{if(args[0]==='/api/portfolio/enrich')throw new Error('Lookup unavailable');return original(...args);};
+      loadPortfolio({...snapshot,positions:[{symbol:'UNKNOWN',quantity:'2'}]},true);await Promise.all([...lookupTasks]);
+      const failedLookupSafe=collectPortfolio().positions[0].quantity==='2'&&collectPortfolio().positions[0].price===null;
+      return {latestWins,discardSafe,batched,failedLookupSafe};
+    }finally{window.api=original;loadPortfolio(snapshot);}
+  })()`);
+  if(Object.values(lookupSafety).some(value=>!value)) throw new Error('Draft lookup safety failed: '+JSON.stringify(lookupSafety));
+  // Explicit report actions expand the selected report, and polling preserves disclosure state.
+  await evaluate('openReport(state.history[0].id,true)');
+  if(!(await evaluate('document.querySelector("#report-card").open'))) throw new Error('Read report did not expand');
+  await evaluate('refresh()');
+  if(!(await evaluate('document.querySelector("#report-card").open'))) throw new Error('Polling collapsed an expanded briefing');
+  await evaluate('document.querySelector("#report-card > summary").focus()');
+  await send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',text:'\r',windowsVirtualKeyCode:13});
+  await send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+  await waitFor('!document.querySelector("#report-card").open');
   // Saved/live research must refuse missing connections instead of silently producing an offline briefing.
   await evaluate('document.querySelector("#run-form").requestSubmit()');
   await waitFor('!runSubmitting && Boolean(runStartError)');
@@ -135,7 +188,7 @@ try {
   await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false}).then(data=>writeFile('.tools/dashboard-mobile.png',Buffer.from(data.data,'base64')));
   await evaluate('document.querySelector("#report-card").hidden=false;document.querySelector("#report-card").scrollIntoView()');
   await send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false}).then(data=>writeFile('.tools/report-mobile.png',Buffer.from(data.data,'base64')));
-  if(!((await evaluate('((heading)=>!!heading && (heading.textContent==="Latest briefing" || heading.textContent.startsWith("Previous briefing")))(document.querySelector("#report-heading")||document.querySelector("#report-card h2"))')) && (await evaluate('document.querySelectorAll("#report-card h2").length===1')))) throw new Error('Latest briefing title is missing or duplicated');
+  if(!((await evaluate('((heading)=>!!heading && (heading.textContent==="Latest briefing" || heading.textContent.startsWith("Previous briefing")))(document.querySelector("#report-heading")||document.querySelector("#report-card h2"))')) && (await evaluate('document.querySelectorAll("#report-heading").length===1')))) throw new Error('Latest briefing title is missing or duplicated');
   if(!(await evaluate('document.querySelector("#report-frame").getAttribute("sandbox").includes("allow-popups")'))) throw new Error('Inline report frame cannot open source links');
   // The dismiss control is shared by every status banner.
   await evaluate(`notice('Smoke notice for dismissal.')`);
@@ -176,5 +229,5 @@ try {
   await pause(200);
   if(!(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'))) throw new Error('Mobile layout overflows horizontally after dismissing alerts');
   if(errors.length) throw new Error('Browser exceptions: '+errors.join(', '));
-  console.log(JSON.stringify({demoReport:true,emailAndScheduleOptional:optional,preferencesSaved:true,csvImport:true,editableCash:true,connectionBlocker:true,addRemoveHoldings:true,unsavedRunBlocked:true,portfolioPersists:true,tabletLayout:true,mobileLayout:true,alertDismissal:true,modelKeyManage:true,reportDelete:true,clearFinished:true,boundedHistory:true,chartSingleLine:true,mobileNoOverflow:true,browserErrors:errors}));
+  console.log(JSON.stringify({demoReport:true,emailAndScheduleOptional:optional,briefingDetailSaved:true,holdingsEditMode:true,briefingCollapsed:true,csvImport:true,editableCash:true,connectionBlocker:true,addRemoveHoldings:true,unsavedRunBlocked:true,portfolioPersists:true,tabletLayout:true,mobileLayout:true,alertDismissal:true,modelKeyManage:true,reportDelete:true,clearFinished:true,boundedHistory:true,chartSingleLine:true,mobileNoOverflow:true,browserErrors:errors}));
 } finally {socket?.close();chrome.kill();}

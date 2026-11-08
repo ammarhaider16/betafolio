@@ -131,7 +131,7 @@ def test_editor_javascript_preserves_draft_and_validates_amounts():
     harness = r'''
 const fs=require('fs'), vm=require('vm'), assert=require('assert/strict');
 class Element {
-  constructor(){this.classList={add(){}};this.children=[];this.dataset={};this.handlers={};this.value='';this.content='csrf';this._text='';}
+  constructor(){this.classList={add(){},toggle(){}};this.children=[];this.dataset={};this.handlers={};this.value='';this.content='csrf';this._text='';}
   append(...items){for(const item of items){item.parent=this;this.children.push(item);}}
   replaceChildren(){this.children=[];}
   setAttribute(){}
@@ -139,6 +139,8 @@ class Element {
   remove(){this.parent.children=this.parent.children.filter(child=>child!==this);}
   get firstElementChild(){return this.children[0];}
   querySelectorAll(){const visit=(item)=>[...(item.dataset.field?[item]:[]),...item.children.flatMap(visit)];return this.children.flatMap(visit);}
+  querySelector(selector){return this.children.flatMap(child=>[child,...child.children]).find(child=>'.'+child.className===selector)||null;}
+  after(item){if(this.parent){const siblings=this.parent.children;siblings.splice(siblings.indexOf(this)+1,0,item);item.parent=this.parent;}}
   get textContent(){return this._text;}
   set textContent(value){this._text=value;}
 }

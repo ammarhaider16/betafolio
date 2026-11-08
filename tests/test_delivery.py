@@ -39,7 +39,7 @@ def test_report_escapes_model_text_and_does_not_print_raw_urls():
     html, text = render_report(value)
     assert "<script>" not in html and "<img" not in html
     assert "&lt;script&gt;" in html
-    assert "https://" not in html + text
+    assert "https://" not in html.split("</head>", 1)[1] + text
 
 
 def test_percentage_email_omits_all_narrative_and_amounts():

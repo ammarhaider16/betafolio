@@ -175,24 +175,24 @@ def render_report(
             lines.append(data["error"])
     style = (
         ":root{color-scheme:light}*{box-sizing:border-box}"
-        'body{font:16px/1.7 "Segoe UI",Arial,sans-serif;color:#243b32;background:#f5f4ef;margin:0;padding:20px}'
-        "main{max-width:800px;margin:auto;background:#fffefb;padding:clamp(20px,5vw,52px);border-top:4px solid #295642}"
-        "h1{font:400 clamp(28px,4vw,38px)/1.15 Georgia,serif;letter-spacing:-.03em;margin:0 0 28px}"
-        "h2{font:400 23px/1.3 Georgia,serif;margin:1.7em 0 .65em;color:#173e2c}"
+        'body{font:16px/1.7 "DM Sans",Arial,sans-serif;color:#14213D;background:#F5F7FC;margin:0;padding:20px}'
+        "main{max-width:800px;margin:auto;background:#FFFFFF;padding:clamp(20px,5vw,52px);border-top:4px solid #2563EB}"
+        "h1{font:400 clamp(28px,4vw,38px)/1.15 \"DM Sans\",Arial,sans-serif;letter-spacing:-.03em;margin:0 0 28px}"
+        "h2{font:400 23px/1.3 \"DM Sans\",Arial,sans-serif;margin:1.7em 0 .65em;color:#14213D}"
         "h3,h4,h5,h6{font-size:17px;line-height:1.4;margin:1.3em 0 .5em}"
-        "p{margin:.6em 0 1em}strong{font-weight:650;color:#173e2c}em{font-style:italic}"
+        "p{margin:.6em 0 1em}strong{font-weight:650;color:#14213D}em{font-style:italic}"
         "li{margin:.5em 0}ul,ol{padding-left:1.3em}li p{margin:.35em 0}"
-        "blockquote{border-left:3px solid #bdcbbc;margin:1em 0;padding:.1em 1.1em;color:#53655a}"
-        "table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:.7em;border-bottom:1px solid #dfe5dc;overflow-wrap:anywhere}"
-        "th{text-align:left;color:#49614f;font-weight:600}td{text-align:right;font-variant-numeric:tabular-nums}"
-        "thead{background:#f2f4ed}.table-scroll{overflow:auto}.note{color:#637365;font-size:14px}"
+        "blockquote{border-left:3px solid #E2E8F0;margin:1em 0;padding:.1em 1.1em;color:#64748B}"
+        "table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:.7em;border-bottom:1px solid #E2E8F0;overflow-wrap:anywhere}"
+        "th{text-align:left;color:#64748B;font-weight:600}td{text-align:right;font-variant-numeric:tabular-nums}"
+        "thead{background:#F5F7FC}.table-scroll{overflow:auto}.note{color:#64748B;font-size:14px}"
         "pre{white-space:pre-wrap;overflow-wrap:anywhere}code{font-size:.9em}section{overflow-wrap:anywhere}"
         "@media(max-width:480px){body{padding:8px}main{padding:20px 16px}h2{font-size:21px}th,td{padding:.6em .4em}}"
     )
     html = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
         + escape(title)
-        + '</title><style>'
+        + '</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet"><style>'
         + style
         + "</style></head><body><main>"
         + body

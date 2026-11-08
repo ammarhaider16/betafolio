@@ -62,7 +62,7 @@ class Settings(BaseModel):
     position_review_threshold_pct: float = Field(default=25, gt=0, le=100)
     sector_review_threshold_pct: float = Field(default=40, gt=0, le=100)
     investment_profile: dict | None = None
-    report_length: Literal["brief", "detailed"] = "brief"
+    report_length: Literal["brief", "detailed"] = "detailed"
     retention_days: int = Field(default=90, ge=1, le=3650)
     schedule: SchedulePolicy = Field(default_factory=SchedulePolicy)
     scheduled_email: bool = False

@@ -254,12 +254,14 @@ async def test_scheduled_runs_use_latest_saved_positions_and_preserve_manual_dat
     await asyncio.gather(*list(app.tasks.values()))
     assert captured[0].snapshot == first
     assert app.store.snapshot() == first
+    assert captured[0].report_length == 'detailed'
     assert captured[0].include_suggestions is False
     assert captured[0].reporting_cutoff == eligible
     row = app.store.run(app.store.history()[0]['id'])
     assert any(dated.isoformat() in warning and 'not automatically synchronized' in warning
                for warning in AnalysisResult.model_validate_json(row['result']).warnings)
 
+    save_settings(app.directory, app.settings.model_copy(update={'report_length': 'brief'}))
     second = first.model_copy(deep=True)
     second.positions[0].quantity = Decimal('7')
     second.cash = Decimal('42')
@@ -269,6 +271,7 @@ async def test_scheduled_runs_use_latest_saved_positions_and_preserve_manual_dat
     await app.scheduler_tick(eligible + timedelta(hours=1))
     await asyncio.gather(*list(app.tasks.values()))
     assert len(captured) == 2
+    assert captured[1].report_length == 'brief'
     assert captured[1].snapshot == second
     assert app.store.snapshot() == second
     assert len(app.store.history()) == 2

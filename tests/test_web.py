@@ -335,3 +335,15 @@ def test_safe_error_reason_maps_status_and_redacts():
     redacted = safe_error_reason(Exception('bad key secret-abc'), 'secret-abc')
     assert 'secret-abc' not in redacted
     assert 'saved-provider-key' not in safe_error_reason(Exception('Invalid saved-provider-key'))
+
+
+def test_briefing_detail_defaults_and_saved_choice_survive_reload(tmp_path):
+    with TestClient(create_app(tmp_path), base_url='http://127.0.0.1:8000') as client:
+        token = csrf(client)
+        assert client.get('/api/status').json()['settings']['report_length'] == 'detailed'
+        assert post(client, token, '/api/settings', {'report_length': 'brief'}).status_code == 200
+    with TestClient(create_app(tmp_path), base_url='http://127.0.0.1:8000') as client:
+        assert client.get('/api/status').json()['settings']['report_length'] == 'brief'
+        token = csrf(client)
+        assert post(client, token, '/api/settings', {'report_length': 'unsupported'}).status_code == 400
+        assert client.get('/api/status').json()['settings']['report_length'] == 'brief'
