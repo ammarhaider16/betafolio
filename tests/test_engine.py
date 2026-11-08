@@ -27,8 +27,11 @@ def test_offline_portfolio_keeps_holdings_and_cash():
 
 
 def test_bad_market_data_cannot_poison_saved_values():
+    attempted = []
+
     class Market:
         async def enrich(self, value):
+            attempted.append(True)
             value.positions[0].price = Decimal("NaN")
             return value
 
@@ -36,6 +39,7 @@ def test_bad_market_data_cannot_poison_saved_values():
         analyze_portfolio(AnalysisRequest(snapshot=snapshot()), EngineDependencies(market_data=Market()))
     )
     assert result.metrics["known_value"] == "300" and result.status != "failed"
+    assert attempted and "saved values are shown" in " ".join(result.warnings)
 
 
 def test_analyst_report_is_not_rewritten_or_rejected_for_missing_citations(monkeypatch):

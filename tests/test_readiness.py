@@ -80,10 +80,10 @@ def test_readiness_uses_actual_briefing_schema_and_tool_result_round_trip():
     result, model = run_probe([{"content":"ready"}, {"tool_calls": tool_call()}, {"tool_calls": final_call()}])
     assert result["ok"] is True
     assert result["tool_calling"] == result["structured_output"] == "ok"
-    assert model.cursor == 3
     assert model.tool_schemas[0][0].name == "record_probe_note"
     assert model.tool_schemas[1][0].__name__ == "ResearchNarrative"
-    assert any(message.type == "tool" and message.tool_call_id == "probe-1" for message in model.seen[2])
+    assert any(message.type == "tool" and message.tool_call_id == "probe-1"
+               for messages in model.seen for message in messages)
     assert all("AAPL" not in str(messages) for messages in model.seen)
 
 

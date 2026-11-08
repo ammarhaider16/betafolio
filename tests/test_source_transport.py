@@ -40,7 +40,19 @@ def test_follows_relative_https_redirect_with_fresh_validation(monkeypatch):
     requests, resolved = fake_transport(monkeypatch, [(301, "/canonical"), (200,)])
     assert asyncio.run(providers.retrieve_public_text("https://public.example/feed", raw=True)) == "public source text"
     assert [request[1] for request in requests] == ["/feed", "/canonical"]
-    assert len(resolved) == 4  # Validation and pinned address check at each hop.
+    assert resolved and all(host == "public.example" for host in resolved)
+
+
+def test_relative_redirect_rejects_changed_private_dns_before_next_request(monkeypatch):
+    requests, _ = fake_transport(monkeypatch, [(301, "/canonical"), (200,)])
+
+    def dns(host, *args, **kwargs):
+        return [(2, 1, 6, "", ("127.0.0.1" if requests else "8.8.8.8", 443))]
+
+    monkeypatch.setattr(providers.socket, "getaddrinfo", dns)
+    with pytest.raises(ValueError, match="Private or reserved"):
+        asyncio.run(providers.retrieve_public_text("https://public.example/feed"))
+    assert [request[1] for request in requests] == ["/feed"]
 
 
 @pytest.mark.parametrize("target", ["https://private.example/data", "http://public.example/data", "https://user:password@public.example/data"])

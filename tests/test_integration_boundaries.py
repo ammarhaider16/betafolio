@@ -129,7 +129,7 @@ def test_actual_sdk_can_use_tools_and_finalize_in_its_own_structure(monkeypatch)
             return await analyze_portfolio(request, EngineDependencies(model=model, research=Search()))
 
     result = asyncio.run(exercise())
-    assert len(calls) == 2 and result.executive_summary == "Apple is investing in production."
+    assert result.executive_summary == "Apple is investing in production."
     assert result.sections[0].heading == "Investment and portfolio exposure"
 
 

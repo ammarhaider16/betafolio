@@ -11,7 +11,7 @@ def test_import_cash_and_coverage():
     assert result.unsupported == ['BTC']
 
 
-@pytest.mark.parametrize('content', ['symbol,quantity\nX,NaN', 'symbol,quantity\nX,-1', 'symbol,quantity\nX,1\nX,2', 'quantity\n2'])
+@pytest.mark.parametrize('content', ['symbol,quantity\nX,1\nX,2', 'quantity\n2'])
 def test_reject_invalid_import(content):
     with pytest.raises(ValueError):
         parse_holdings_csv(content, datetime.now(timezone.utc))
@@ -29,11 +29,6 @@ def test_cash_aliases_and_formatted_currency_are_separate_from_holdings():
     assert snapshot.positions[0].price is None
 
 
-def test_unknown_price_is_preserved():
-    snapshot = parse_holdings_csv('symbol,quantity,price\nABC,2,', datetime.now(timezone.utc))
-    assert snapshot.positions[0].price is None
-
-
 def test_price_only_import_requires_quantity():
     with pytest.raises(ValueError, match='ticker and quantity'):
         parse_holdings_csv('Ticker,Price\nSPUS,$40.50', datetime.now(timezone.utc))
@@ -45,9 +40,10 @@ def test_every_imported_holding_requires_valid_quantity(quantity):
         parse_holdings_csv(f'ticker,quantity,price\nABC,{quantity},5', datetime.now(timezone.utc))
 
 
-def test_imported_prices_are_ignored_even_when_invalid():
+@pytest.mark.parametrize('price', ['', 'NaN', '12.50'])
+def test_imported_prices_are_ignored_even_when_invalid(price):
     draft = parse_holdings_csv(
-        'ticker,shares,price,previous_close\nABC,2,NaN,invalid\nCASH,100,Infinity,-5',
+        f'ticker,shares,price,previous_close\nABC,2,{price},invalid\nCASH,100,Infinity,-5',
         datetime.now(timezone.utc),
     )
     assert draft.cash == 100

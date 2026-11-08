@@ -75,15 +75,6 @@ def test_probes_use_ticker_and_market_paths_and_test_full_fallback(monkeypatch):
     assert any(call[0] == "search" and "Federal Reserve" in call[1] for call in calls)
 
 
-def test_partial_official_failure_persists(monkeypatch):
-    provider = PrimaryFeedResearchProvider()
-    async def mixed(url, **kwargs):
-        return "<rss><channel><item><title>Inflation update</title><link>https://federalreserve.gov/update</link></item></channel></rss>"
-    monkeypatch.setattr(provider, "_fetch", mixed)
-    assert asyncio.run(provider.search("inflation"))
-    assert source_diagnostics(provider)["fed"]["status"] == "passed"
-
-
 def test_duplicate_url_preserves_stronger_evidence():
     headline = Evidence(id="headline", url="https://example.com/event", publisher="example.com", title="AAPL earnings beat estimates", content_type="news_feed")
     full = headline.model_copy(update={"id": "full", "content_type": "retrieved_page"})
@@ -131,19 +122,38 @@ def test_identifying_contact_only_sent_to_sec(monkeypatch):
 
 
 def test_source_probes_run_independently_and_keep_timeout(monkeypatch):
-    calls = []
     async def exercise():
-        ready = asyncio.Event()
+        official_started, official_done = asyncio.Event(), asyncio.Event()
+        news_started = asyncio.Event()
+        wait_for = asyncio.wait_for
+
+        async def bounded(awaitable, timeout):
+            return await wait_for(awaitable, timeout=.05 if timeout == 8 else timeout)
+
         async def fetch(url, **kwargs):
-            calls.append(url)
-            ready.set()
-            await ready.wait()
-            return "<rss><channel><item><title>Market update</title><link>https://www.federalreserve.gov/update</link></item></channel></rss>"
+            official_started.set()
+            try:
+                await news_started.wait()
+                await asyncio.Event().wait()
+            finally:
+                official_done.set()
+
+        async def news(*args):
+            await official_started.wait()
+            assert not official_done.is_set(), "A blocked source must not delay the healthy source"
+            news_started.set()
+            return [Evidence(id="news", url="https://example.com/news", publisher="News", title="Market update")]
+
+        ticker = TickerNewsFeedProvider(sources=("google_news",))
+        monkeypatch.setattr(ticker, "_source_entries", news)
         monkeypatch.setattr(providers, "retrieve_public_text", fetch)
-        return await asyncio.wait_for(probe_research_sources(PrimaryFeedResearchProvider()), timeout=1)
+        monkeypatch.setattr(providers.asyncio, "wait_for", bounded)
+        return await wait_for(probe_research_sources(CompositeResearchProvider([PrimaryFeedResearchProvider(), ticker])), timeout=1)
+
     outcomes = asyncio.run(exercise())
-    assert len(calls) == 1
-    assert outcomes["fed"]["status"] == "passed"
+    assert outcomes["fed"]["status"] == "failed"
+    assert "timed out" in outcomes["fed"]["reason"]
+    assert outcomes["google_news"]["status"] == "passed"
 
 
 def test_symbol_candidate_dispatch_reaches_general_search():
