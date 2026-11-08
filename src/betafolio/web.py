@@ -9,7 +9,7 @@ import os
 import secrets
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -67,6 +67,7 @@ class RunSubmission(BaseModel):
     question: str = Field(default="", max_length=4000)
     include_suggestions: bool = False
     send_email: bool = False
+    research_date: date | None = None
 
 
 class PortfolioUpdate(BaseModel):
@@ -294,7 +295,9 @@ def create_app(directory: Path | None = None, server: bool | None = None):
         secrets = await asyncio.to_thread(secret_status, settings, service.secrets, server)
         storage = await asyncio.to_thread(service.secrets.storage_status)
         managed_secrets = ("model_api_key", *SECRET_ALIASES, "smtp_password")
-        return {"snapshot": snapshot.model_dump(mode="json") if snapshot else None,
+        from zoneinfo import ZoneInfo
+        return {"research_today": datetime.now(ZoneInfo(settings.schedule.timezone)).date().isoformat(),
+                "snapshot": snapshot.model_dump(mode="json") if snapshot else None,
                 "history": service.history(), "settings": settings.model_dump(mode="json"),
                 "prices": quotes["prices"], "prices_as_of": quotes["as_of"],
                 "externally_managed": sorted(externally_managed()), "next_run": next_run,
@@ -469,6 +472,11 @@ def create_app(directory: Path | None = None, server: bool | None = None):
 
     @app.post("/api/runs", status_code=202)
     async def create_run(submission: RunSubmission, request: Request):
+        from .research_clock import research_timestamp
+        as_of = research_timestamp(submission.research_date, service.settings.schedule.timezone)
+        analysis = submission.analysis
+        if analysis and submission.research_date is not None:
+            analysis = AnalysisRequest.model_validate({**analysis.model_dump(), "research_as_of": as_of})
         if request.state.api_authorized and submission.send_email:
             raise HTTPException(403, "Research API tokens cannot request email delivery")
         if submission.source != 'demo':
@@ -476,8 +484,9 @@ def create_app(directory: Path | None = None, server: bool | None = None):
                 await service.ensure_research_ready()
             except ValueError as error:
                 raise HTTPException(409,str(error)) from None
-        run_id = service.submit(submission.analysis, submission.source, submission.send_email,
-                                overrides={"question": submission.question, "include_suggestions": submission.include_suggestions})
+        run_id = service.submit(analysis, submission.source, submission.send_email,
+                                overrides={"question": submission.question, "include_suggestions": submission.include_suggestions,
+                                           "research_as_of": as_of})
         return {"run_id": run_id, "status": "queued", "result_url": "/api/runs/" + run_id}
 
     @app.get("/api/runs/{run_id}")

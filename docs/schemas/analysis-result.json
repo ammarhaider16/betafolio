@@ -32,6 +32,19 @@
           "default": null,
           "title": "Published At"
         },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        },
         "retrieved_at": {
           "format": "date-time",
           "title": "Retrieved At",
@@ -107,6 +120,19 @@
       "format": "date-time",
       "title": "Created At",
       "type": "string"
+    },
+    "research_as_of": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Research As Of"
     },
     "snapshot_as_of": {
       "format": "date-time",

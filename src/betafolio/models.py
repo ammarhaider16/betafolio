@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Contract(BaseModel):
@@ -95,18 +95,28 @@ class AnalysisRequest(Contract):
     position_review_threshold_pct: float = Field(default=25, gt=0, le=100)
     sector_review_threshold_pct: float = Field(default=40, gt=0, le=100)
     reporting_cutoff: datetime | None = None
+    research_as_of: datetime | None = None
 
     @field_validator("benchmark")
     @classmethod
     def benchmark_symbol(cls, value: str) -> str:
         return Position.normalize_symbol(value) if value.strip() else ""
 
-    @field_validator("reporting_cutoff")
+    @field_validator("reporting_cutoff", "research_as_of")
     @classmethod
     def aware_cutoff(cls, value: datetime | None) -> datetime | None:
         if value is not None and value.tzinfo is None:
             raise ValueError("Reporting cutoff must include a timezone")
         return value
+
+    @model_validator(mode="after")
+    def research_clock(self):
+        if self.research_as_of:
+            if self.research_as_of > datetime.now(timezone.utc):
+                raise ValueError("Research date cannot be in the future")
+            if self.reporting_cutoff and self.reporting_cutoff != self.research_as_of:
+                raise ValueError("Research timestamp and reporting cutoff must agree")
+        return self
 
 
 class Evidence(Contract):
@@ -116,6 +126,7 @@ class Evidence(Contract):
     title: str
     publisher: str
     published_at: datetime | None = None
+    updated_at: datetime | None = None
     retrieved_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     excerpt: str = ""
     content_type: str = "search_excerpt"
@@ -131,6 +142,7 @@ class AnalysisResult(Contract):
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     status: Literal["success", "partial", "failed"] = "success"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    research_as_of: datetime | None = None
     snapshot_as_of: datetime
     metrics: dict[str, Any] = Field(default_factory=dict)
     coverage: dict[str, Any] = Field(default_factory=dict)

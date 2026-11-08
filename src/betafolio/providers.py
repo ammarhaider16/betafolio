@@ -469,6 +469,12 @@ class ContentSearchProvider:
                     source.published_at = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
                 except (ValueError, TypeError, AttributeError):
                     pass
+            if row.get("last_updated"):
+                try:
+                    stamp = datetime.fromisoformat(row["last_updated"].replace("Z", "+00:00"))
+                    source.updated_at = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError, AttributeError):
+                    pass
             items.append(source)
         return await _finalize_sources(self, items, reference=reporting_cutoff)
 
@@ -631,6 +637,45 @@ class YFinanceMarketDataProvider:
                 results[symbol] = history
         return results
 
+    async def _dated_history(self, symbol, as_of, days):
+        session = completed_market_session(as_of)
+        end = datetime.fromisoformat(session).date() + timedelta(days=1)
+
+        def fetch():
+            import yfinance as yf
+            prices = yf.Ticker(symbol).history(start=(end - timedelta(days=days)).isoformat(),
+                                               end=end.isoformat(), interval="1d", auto_adjust=False, timeout=10)
+            if prices.empty:
+                return {}
+            return {str(stamp.date()): price for stamp, value in prices['Close'].dropna().items()
+                    if str(stamp.date()) <= session and (price := valid_market_price(value)) is not None}
+
+        return await _run_source_worker(fetch)
+
+    async def historical_quotes(self, symbols, as_of):
+        async def one(symbol):
+            try:
+                rows = sorted((await self._dated_history(symbol, as_of, 30)).items())
+                if rows:
+                    return symbol, {'price': rows[-1][1], 'previous_close': rows[-2][1] if len(rows) > 1 else None,
+                                    'trading_date': rows[-1][0], 'quote_as_of': None,
+                                    'retrieved_at': datetime.now(timezone.utc).isoformat(),
+                                    'source': 'yfinance', 'valuation_type': 'daily_close'}
+            except Exception:
+                pass
+            return symbol, None
+
+        return {symbol: quote for symbol, quote in await asyncio.gather(*(one(s) for s in dict.fromkeys(symbols))) if quote}
+
+    async def historical_history(self, snapshot, as_of):
+        result = {}
+        for symbol in dict.fromkeys(row.symbol for row in snapshot.positions):
+            try:
+                result[symbol] = {day: float(price) for day, price in (await self._dated_history(symbol, as_of, 366)).items()}
+            except Exception:
+                continue
+        return result
+
 
 def quote_is_newer(quote, position):
     """Never downgrade a stored observation to an older session or timestamp."""
@@ -658,6 +703,17 @@ def expected_market_session(now=None):
     if calendar.session_open(session).to_pydatetime() > now:
         session = calendar.previous_session(session)
     return session.date().isoformat()
+
+
+def completed_market_session(as_of):
+    """Daily-close history cannot supply a close for a session still in progress."""
+    import exchange_calendars as calendars
+    session = expected_market_session(as_of)
+    calendar = calendars.get_calendar('XNYS', start=(as_of.date()-timedelta(days=40)).isoformat(),
+                                      end=(as_of.date()+timedelta(days=10)).isoformat())
+    if calendar.session_close(session).to_pydatetime() > as_of:
+        return calendar.previous_session(session).date().isoformat()
+    return session
 
 
 def valid_market_price(value):

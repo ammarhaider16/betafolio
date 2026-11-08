@@ -393,7 +393,7 @@ function outcomeBadge(row){
     : {text:'Briefing ready',cls:'state-written'};
 }
 function runActive(){return Boolean(state&&Array.isArray(state.history)&&state.history.some(row=>['queued','running'].includes(row.status)));}
-function reportHeadingText(row,active){if(active&&row&&row.created_at)return `Previous briefing (${dateLabel(row.created_at)})`;return 'Latest briefing';}
+function reportHeadingText(row,active){if(active&&row&&row.created_at)return `Previous briefing (${dateLabel(row.research_as_of||row.created_at)})`;return 'Latest briefing';}
 function updateReportHeading(){const el=$('#report-heading');if(el)el.textContent=reportHeadingText(currentReportRow,runActive());}
 function focusRunButton(){
   const control=$('#run-button');if(!control)return;
@@ -408,7 +408,8 @@ const historySignatures=new Map();
 function historyItem(row) {
   const item=document.createElement('div'); item.className='history-row';
   const info=document.createElement('div'), title=document.createElement('strong'), detail=document.createElement('small');
-  title.textContent=dateLabel(row.created_at); detail.textContent=row.error || (row.schedule_key ? `Scheduled session ${row.schedule_key}` : 'On-demand research');
+  const day=value=>new Date(value).toLocaleDateString('en-CA',{timeZone:state?.settings?.schedule?.timezone||'America/New_York'});
+  title.textContent=dateLabel(row.created_at);if(row.research_as_of&&day(row.created_at)!==day(row.research_as_of))title.textContent+=` | Research as of ${dateLabel(row.research_as_of)}`; detail.textContent=row.error || (row.schedule_key ? `Scheduled session ${row.schedule_key}` : 'On-demand research');
   if(row.delivery) detail.textContent+=` | Email: ${row.delivery}`;
   info.append(title,detail);
   const actions=document.createElement('div'); actions.className='history-actions';
@@ -428,7 +429,7 @@ function historyItem(row) {
   actions.append(button('Agent trace',async()=>{selectedTrace=row.id;view('activity');await refreshActivity(state.history);}));
   item.append(info,actions); return item;
 }
-function historySignature(row){return JSON.stringify([row.status,row.summary,row.error,row.delivery,row.created_at,row.schedule_key,row.narrative_state,row.analysis_written,row.section_titles]);}
+function historySignature(row){return JSON.stringify([row.status,row.summary,row.error,row.delivery,row.created_at,row.research_as_of,row.schedule_key,row.narrative_state,row.analysis_written,row.section_titles]);}
 function renderHistory(rows) {
   // Reconcile by id so a 4-second poll does not rebuild (and steal focus from) unchanged rows.
   const container=$('#history');
@@ -455,6 +456,7 @@ function renderHistory(rows) {
 async function refresh(populate=false) {
   state=await api('/api/status');
   const s=state.settings, snapshot=state.snapshot;
+  const researchDate=$('#run-form').elements.research_date;researchDate.max=state.research_today||'';if(!researchDate.value)researchDate.value=state.research_today||'';
   if(!portfolioDirty && editableProjection(snapshot)!==editorVersion) loadPortfolio(snapshot);
   pricesAsOf=state.prices_as_of||pricesAsOf;
   if(snapshot){const serverPrices={};for(const position of snapshot.positions||[]){if(position.price!==null&&position.price!==undefined)serverPrices[position.symbol]={price:position.price,previous_close:position.previous_close};}applyQuotes(serverPrices);}
@@ -603,7 +605,7 @@ if($('#login-form')) {
     if(portfolioDirty){view('desk');$('#portfolio-editor').scrollIntoView({behavior:'smooth'});throw new Error('Save or discard your portfolio edits before starting a briefing.');}
     runSubmitting=true;runStartError='';runStatusId=null;$('#run-button').disabled=true;$('#run-button').textContent='Checking connections…';$('#run-progress').hidden=false;$('#run-progress-text').textContent='Checking connections…';$('#notice').hidden=true;
     try{
-      const data=values('#run-form');data.include_suggestions=checked('#run-form','include_suggestions');data.send_email=checked('#run-form','send_email');
+      const data=values('#run-form');data.research_date=data.research_date||null;data.include_suggestions=checked('#run-form','include_suggestions');data.send_email=checked('#run-form','send_email');
       const run=await api('/api/runs',data);pendingRunId=run.run_id;runStatusId=run.run_id;runQuestions.set(run.run_id,String(data.question||''));selectedReport=null;$('#run-form').elements.include_suggestions.checked=false;
     }catch(error){runStartError=error.message;}
     finally{runSubmitting=false;await refresh();}

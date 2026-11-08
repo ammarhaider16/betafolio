@@ -40,6 +40,10 @@ try {
   await send('Emulation.setDeviceMetricsOverride',{width:1440,height:1050,deviceScaleFactor:1,mobile:false});
   await send('Page.navigate',{url});
   await waitFor('Boolean(document.querySelector("#run-button")) && typeof state !== "undefined" && state !== null');
+  if(!(await evaluate(`(()=>{const input=document.querySelector('#run-form').elements.research_date;return input.type==='date'&&input.value===state.research_today&&input.max===state.research_today;})()`))) throw new Error('Research date must default to today with future dates disabled');
+  await evaluate(`document.querySelector('#run-form').elements.research_date.value='2020-01-03';refresh()`);
+  if(!(await evaluate(`values('#run-form').research_date==='2020-01-03'`))) throw new Error('Status polling overwrote the selected research date');
+  await evaluate(`document.querySelector('#run-form').elements.research_date.value=state.research_today`);
   if(!(await evaluate('document.title.includes("Betafolio") && !document.querySelector(".brand-icon") && Boolean(document.querySelector("#fill-details"))'))) throw new Error('Betafolio branding or draft enrichment action is missing');
   if(!(await evaluate('!state.settings.sec_company_filings_enabled && !document.querySelector("#research-form input[name=sec_contact]").closest("details:not(#research-setup)") && document.querySelector("#sec-availability").textContent.includes("off")'))) throw new Error('Fresh SEC availability and contact must be visible beside its setting');
   await evaluate(`document.querySelector('#research-form input[name=sec_contact]').value='Owner owner@example.com';document.querySelector('#research-form input[name=sec_contact]').dispatchEvent(new Event('input'));`);

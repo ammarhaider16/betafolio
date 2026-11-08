@@ -25,6 +25,10 @@ Each search provider works independently; additional news feeds are optional. Ta
 
 Start a run from **Portfolio**, follow its status, and return to its briefing in research history. Open **Activity** to select a run and review the observed agent calls and outcomes. Activity traces do not include private model reasoning. Optional scheduling and email are configured separately.
 
+Choose a **Research date** to test an earlier briefing using your saved share quantities and cash. Past dates use the end of that day in your configured timezone, historical closing prices, and dated research available up to that point. Reports identify the research date separately from when the run executed; your saved portfolio and live prices are unchanged. This is best-effort historical research, not a hindsight-free backtest: webpages, provider prices and model knowledge can contain later revisions. Undated news and current-only data are excluded rather than substituted. Some sources cannot supply older material.
+
+From the command line, use `uv run betafolio analyze --as-of 2020-01-03`. Python/API requests accept a timezone-aware `research_as_of`; dashboard submissions accept `research_date`. Today is the normal live mode. Future dates are rejected.
+
 ## Developer quickstart
 
 Install the development dependencies and run the app:

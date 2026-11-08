@@ -105,7 +105,7 @@ class Store:
 
     def history(self, limit=30):
         with self.db() as db:
-            return [dict(row) for row in db.execute("SELECT id,created_at,status,error,delivery,schedule_key,summary FROM runs ORDER BY created_at DESC LIMIT ?", (limit,))]
+            return [dict(row) for row in db.execute("SELECT id,created_at,status,error,delivery,schedule_key,summary,json_extract(result,'$.research_as_of') AS research_as_of FROM runs ORDER BY created_at DESC LIMIT ?", (limit,))]
 
     def has_schedule(self, key):
         with self.db() as db:

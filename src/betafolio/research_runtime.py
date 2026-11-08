@@ -4,6 +4,8 @@ import asyncio
 import inspect
 from datetime import datetime, timezone
 from uuid import uuid4
+from typing import Annotated
+from pydantic import Field
 
 
 class ResearchBudgetExceeded(RuntimeError):
@@ -22,6 +24,7 @@ class ResearchRuntime:
         activity=None,
         budget=None,
         activity_sink=None,
+        clock=None,
     ):
         self.request, self.sources, self.research, self.market_data = request, sources, research, market_data
         self.deadline = deadline or asyncio.get_running_loop().time() + request.max_seconds
@@ -32,6 +35,8 @@ class ResearchRuntime:
         for name in ("queries", "tool_calls", "model_calls"):
             self.budget.setdefault(name, 0)
         self.activity_sink = activity_sink
+        from .research_clock import ResearchClock
+        self.clock = clock or ResearchClock.for_request(request)
 
     def remaining(self):
         return max(0, self.deadline - asyncio.get_running_loop().time())
@@ -60,6 +65,7 @@ class ResearchRuntime:
             "publisher": source.publisher,
             "published_at": source.published_at.isoformat() if source.published_at else None,
             "content": source.excerpt or source.title,
+            "instruction_scope": "reference_only",
         }
 
     def register(self, sources):
@@ -100,13 +106,16 @@ class ResearchRuntime:
         from .news import source_hygiene
 
         candidates, _ = source_hygiene(
-            candidates, reference=self.request.reporting_cutoff, max_age_hours=self.request.max_data_age_hours
+            candidates, reference=self.clock.cutoff(self.request), max_age_hours=self.request.max_data_age_hours
         )
+        if self.clock.historical:
+            candidates = [source for source in candidates if source.published_at
+                          and (not source.updated_at or source.updated_at <= self.clock.now)]
         from .providers import is_aggregator_url
 
         # Source preparation belongs here, not in the analyst's writing workflow.
         async def prepare(source, index):
-            if (index < 4 and not (source.excerpt and source.content_type in {"retrieved_page", "provider_excerpt"})
+            if (not self.clock.historical and index < 4 and not (source.excerpt and source.content_type in {"retrieved_page", "provider_excerpt"})
                     and not is_aggregator_url(source.url)):
                 try:
                     async with asyncio.timeout(8):
@@ -152,7 +161,8 @@ class ResearchRuntime:
     def tools(self):
         from langchain_core.tools import StructuredTool
 
-        async def search_news(query: str, symbol: str = "") -> list | dict:
+        async def search_news(query: Annotated[str, Field(min_length=1, max_length=1000)],
+                              symbol: Annotated[str, Field(max_length=40)] = "") -> list | dict:
             """Find news or research on any topic or asset. Returns publisher, date and prepared readable content."""
 
             async def operation():
@@ -168,7 +178,7 @@ class ResearchRuntime:
                     self.research,
                     query,
                     12,
-                    self.request.reporting_cutoff,
+                    self.clock.cutoff(self.request),
                     symbol.upper() or None,
                     position.instrument_name if position else None,
                 )
@@ -186,13 +196,15 @@ class ResearchRuntime:
                 "search_news", operation, discovery=True, query=query[:1000], symbol=symbol.upper()
             )
 
-        async def read_article(source_id: str) -> dict | list:
+        async def read_article(source_id: Annotated[str, Field(min_length=1, max_length=128)]) -> dict | list:
             """Read more detail from a news item returned by search_news."""
 
             async def operation():
                 source = next((item for item in self.sources if item.id == source_id), None)
                 if source is None:
                     return {"message": "Choose a source_id returned by search_news."}
+                if self.clock.historical:
+                    return [self.present(source)] if source.excerpt else {"message": "Additional content is unavailable for this source."}
                 if source.content_type == "retrieved_page" and source.excerpt:
                     return [self.present(source)]
                 try:
@@ -208,15 +220,18 @@ class ResearchRuntime:
 
             return await self.execute("read_article", operation, source=source_id)
 
-        async def get_market_data(symbol: str) -> dict:
+        async def get_market_data(symbol: Annotated[str, Field(min_length=1, max_length=40)]) -> dict:
             """Get the current available quote, previous session close and instrument identity for a ticker."""
 
             async def operation():
                 if self.market_data is None:
                     return {"message": "Market data is unavailable."}
-                quotes = await self.market_data.quotes([symbol.upper()])
-                identity = await self.market_data.resolve_instrument(symbol.upper())
-                return {"quote": quotes.get(symbol.upper()), "instrument": identity}
+                from .models import Position
+                from .research_clock import model_data
+                ticker = Position.normalize_symbol(symbol)
+                quotes = await self.market_data.quotes([ticker])
+                identity = await self.market_data.resolve_instrument(ticker)
+                return model_data({"quote": quotes.get(ticker), "instrument": identity})
 
             return await self.execute("get_market_data", operation, symbol=symbol.upper())
 

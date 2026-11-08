@@ -24,6 +24,7 @@ def parser():
     run.add_argument("--offline", action="store_true", help="Deterministic metrics, without network calls")
     run.add_argument("--send", action="store_true", help="Also email the report to the configured verified owner")
     run.add_argument("--format", choices=["json", "text", "html"], default="json")
+    run.add_argument("--as-of", help="Research date (YYYY-MM-DD), using saved holdings and historical prices")
     diagnostics = commands.add_parser("diagnostics", help="Inspect configuration without showing credentials")
     diagnostics.add_argument("--live", action="store_true", help="Explicitly check configured external connections (may incur provider usage)")
     schema = commands.add_parser("schema", help="Print a public JSON schema")
@@ -49,6 +50,10 @@ async def run_analysis(args, directory):
         if not snapshot:
             raise ValueError("Supply --request, --demo, or import holdings in the dashboard")
         request = service.request_for(snapshot)
+    if args.as_of:
+        from .research_clock import research_timestamp
+        request = AnalysisRequest.model_validate({**request.model_dump(),
+                    "research_as_of": research_timestamp(args.as_of, service.settings.schedule.timezone)})
     if not args.offline and not args.demo:
         await service.ensure_research_ready()
     initialization_warning = None

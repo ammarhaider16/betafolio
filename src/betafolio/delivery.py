@@ -98,7 +98,7 @@ def render_report(
     data = _data(result)
     metrics = data.get("metrics") or {}
     title = "Betafolio briefing — " + human_date(
-        data.get("created_at") or data.get("snapshot_as_of"), timezone, full=True
+        data.get("research_as_of") or data.get("created_at") or data.get("snapshot_as_of"), timezone, full=True
     )
     lines = [title]
     body = "<h1>" + escape(title) + "</h1>"

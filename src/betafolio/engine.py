@@ -52,9 +52,24 @@ class EngineDependencies:
 
 async def analyze_portfolio(request, dependencies=None):
     from .providers import source_network_scope
+    from .research_clock import ResearchClock, DatedMarketData
 
     request = AnalysisRequest.model_validate(request)
+    portfolio_as_of = request.snapshot.as_of
+    clock = ResearchClock.for_request(request)
     dependencies = dependencies or EngineDependencies()
+    if clock.historical:
+        from dataclasses import replace
+        snapshot = request.snapshot.model_copy(deep=True)
+        snapshot.as_of = clock.now
+        if snapshot.source != "demonstration":
+            snapshot.source = "supplied"
+        for row in snapshot.positions:
+            for name in ('price', 'previous_close', 'price_as_of', 'price_session', 'price_source',
+                         'instrument_name', 'sector', 'exchange'):
+                setattr(row, name, None)
+        request = request.model_copy(update={'snapshot': snapshot, 'previous_snapshot': None})
+        dependencies = replace(dependencies, market_data=DatedMarketData(dependencies.market_data, clock.now), instrument_resolver=None)
     request = request.model_copy(
         update={
             name: min(getattr(request, name), getattr(dependencies, hard))
@@ -66,13 +81,13 @@ async def analyze_portfolio(request, dependencies=None):
             )
         }
     )
-    result = AnalysisResult(snapshot_as_of=request.snapshot.as_of)
+    result = AnalysisResult(snapshot_as_of=portfolio_as_of, research_as_of=clock.now)
     deadline = asyncio.get_running_loop().time() + request.max_seconds
     try:
         async with asyncio.timeout(request.max_seconds):
             async with dependencies.semaphore:
                 with source_network_scope(limit=4):
-                    await _analyze(request, dependencies, result, deadline)
+                    await _analyze(request, dependencies, result, deadline, clock)
     except asyncio.CancelledError:
         raise
     except TimeoutError:
@@ -104,7 +119,7 @@ def _portfolio_summary(metrics):
     return f"Your saved portfolio is valued at ${value:,.2f}, including {metrics.get('cash_weight_pct', 0):.1f}% in cash."
 
 
-async def _analyze(request, dependencies, result, deadline):
+async def _analyze(request, dependencies, result, deadline, clock):
     from .providers import expected_market_session
 
     if request.snapshot.source == "demonstration":
@@ -143,7 +158,7 @@ async def _analyze(request, dependencies, result, deadline):
                 pass
 
         await asyncio.gather(*(fill(position) for position in snapshot.positions))
-    session = expected_market_session()
+    session = expected_market_session(clock.now)
     dated = []
     for position in snapshot.positions:
         metadata = price_metadata.get(position.symbol, {})
@@ -197,6 +212,8 @@ async def _analyze(request, dependencies, result, deadline):
                 result.metrics["historical_risk"] = historical_risk(
                     snapshot, await dependencies.market_data.history(snapshot)
                 )
+                if clock.historical:
+                    result.metrics["historical_risk"]["method"] = result.metrics["historical_risk"]["method"].replace('adjusted closes', 'daily closing prices')
         except Exception:
             pass
     if dependencies.model:
@@ -213,6 +230,7 @@ async def _analyze(request, dependencies, result, deadline):
             budget=result.research_budget,
             activity_sink=dependencies.activity_sink,
             deadline=deadline,
+            clock=clock,
         )
         result.executive_summary = narrative.executive_summary
         result.sections = narrative.sections
@@ -246,13 +264,14 @@ async def _analyze(request, dependencies, result, deadline):
                 budget=result.research_budget,
                 activity_sink=dependencies.activity_sink,
                 deadline=deadline,
+                clock=clock,
             )
             news = await runtime.prepare_news(
                 await _search_events(
                     dependencies.research,
                     " ".join(position.symbol for position in snapshot.positions) + " recent portfolio news",
                     12,
-                    request.reporting_cutoff,
+                    clock.cutoff(request),
                 )
             )
             if news:

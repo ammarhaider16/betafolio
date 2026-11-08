@@ -312,6 +312,19 @@
       ],
       "default": null,
       "title": "Reporting Cutoff"
+    },
+    "research_as_of": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Research As Of"
     }
   },
   "required": [
