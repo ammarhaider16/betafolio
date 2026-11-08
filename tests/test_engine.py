@@ -59,3 +59,15 @@ def test_analyst_report_is_not_rewritten_or_rejected_for_missing_citations(monke
     )
     assert result.executive_summary == "The fund mix matters more than one headline."
     assert result.sections[0].heading == "A connected view"
+
+
+def test_briefing_that_skips_available_research_is_marked_incomplete(monkeypatch):
+    async def narrative(*args, **kwargs):
+        kwargs["budget"]["analysis_written"] = True
+        return ResearchNarrative(executive_summary="Portfolio arithmetic alone.")
+
+    monkeypatch.setattr("betafolio.agent.generate_narrative", narrative)
+    result = asyncio.run(analyze_portfolio(AnalysisRequest(snapshot=snapshot()),
+                                         EngineDependencies(model=object(), research=object())))
+    assert result.status == "partial"
+    assert "Current news was not researched" in " ".join(result.warnings)

@@ -21,6 +21,8 @@ Configure a model and test its connection in **Connections**. OpenAI, Anthropic,
 
 Exa highlights, Perplexity extracted excerpts, and Tavily content go directly to the analyst without automatically fetching the same pages again. The analyst can request deeper reading when useful. Search keys stay separate when switching providers; `EXA_API_KEY`, `PERPLEXITY_API_KEY`, and `TAVILY_API_KEY` are supported deployment aliases.
 
+Each search provider works independently; additional news feeds are optional. Tavily uses basic general search, with relevant passages placed before extracted article text. Search requests have a longer allowance than headline feeds. A briefing that fails to obtain news sources is marked incomplete rather than reported as fully researched.
+
 Start a run from **Portfolio**, follow its status, and return to its briefing in research history. Open **Activity** to select a run and review the observed agent calls and outcomes. Activity traces do not include private model reasoning. Optional scheduling and email are configured separately.
 
 ## Developer quickstart

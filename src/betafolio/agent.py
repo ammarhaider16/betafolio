@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import datetime, timezone
 
 from .models import AnalysisRequest, ResearchNarrative
 
@@ -99,6 +100,8 @@ async def generate_narrative(
         "investment_profile": request.investment_profile,
         "include_suggestions": request.include_suggestions,
         "report_date": metrics.get("price_session"),
+        "research_as_of": datetime.now(timezone.utc).isoformat(),
+        "research_available": research is not None and request.max_searches > 0,
         "portfolio_measures": metrics,
         "news": [runtime.present(source) for source in sources],
     }

@@ -219,6 +219,13 @@ async def _analyze(request, dependencies, result, deadline):
         result.suggestions = narrative.suggestions if request.include_suggestions else []
         if not result.research_budget.get("analysis_written"):
             result.status = "partial"
+        elif dependencies.research and not result.sources:
+            result.status = "partial"
+            result.warnings.append(
+                "Current news was not researched in this run."
+                if not result.research_budget.get("queries")
+                else "News searches did not return usable sources; the briefing has a research gap."
+            )
     else:
         result.executive_summary = _portfolio_summary(result.metrics)
         move = result.metrics.get("daily_price_change_estimate")

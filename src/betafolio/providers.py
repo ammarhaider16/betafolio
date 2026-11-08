@@ -20,6 +20,12 @@ from .source_status import record_outcome, safe_source_error, valid_sec_contact
 _SOURCE_WORKERS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="public-source")
 SOURCE_REQUEST_SECONDS = 15.0
 SOURCE_CHILD_SECONDS = 6.0
+SEARCH_REQUEST_SECONDS = 25.0
+
+
+def _source_timeout(provider):
+    # Extracting search APIs need longer than a headline-feed request.
+    return SEARCH_REQUEST_SECONDS if isinstance(provider, (TavilyResearchProvider, ContentSearchProvider)) else SOURCE_CHILD_SECONDS
 _RUN_SOURCE_LIMIT = ContextVar("run_source_limit", default=None)
 _SOURCE_SLOT_OWNER = ContextVar("source_slot_owner", default=None)
 _LOOP_SOURCE_LIMITS = WeakKeyDictionary()
@@ -372,31 +378,43 @@ class TavilyResearchProvider:
         return await self._search(query, max_results, topic="general")
 
     async def search_events(self, query: str, max_results: int = 3, reporting_cutoff=None) -> list[Evidence]:
-        return await self._search(query, max_results, topic="news", reporting_cutoff=reporting_cutoff)
+        return await self._search(query, max_results, topic="general", reporting_cutoff=reporting_cutoff)
 
     async def _search(self, query: str, max_results: int, *, topic: str, reporting_cutoff=None) -> list[Evidence]:
         import httpx
         payload = {"api_key": self.api_key, "query": query, "max_results": max_results,
-                   "search_depth": "basic", "topic": topic, "include_raw_content": "text"}
-        if topic == "news":
-            if reporting_cutoff is None:
-                payload["time_range"] = "month"
-            else:
-                payload["end_date"] = reporting_cutoff.date().isoformat()
+                   "search_depth": "basic", "topic": topic, "include_raw_content": "text",
+                   "include_published_date": True}
+        if reporting_cutoff is not None:
+            payload["end_date"] = reporting_cutoff.date().isoformat()
         async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
             response = await client.post("https://api.tavily.com/search", json=payload)
             _check_search_response(response)
             results = []
-            for row in response.json().get("results", []):
-                source = _evidence(row["url"], row.get("title", "Source"), row.get("raw_content") or row.get("content", ""))
+            body = response.json()
+            if not isinstance(body, dict) or not isinstance(body.get("results"), list):
+                raise SourceAccessError("response", "The search provider returned an invalid result format.")
+            for row in body["results"]:
+                if not isinstance(row, dict):
+                    continue
+                # Put query-relevant chunks before full text, which can start with navigation.
+                relevant, raw = row.get("content") or "", row.get("raw_content") or ""
+                try:
+                    source = _evidence(row.get("url", ""), row.get("title") or "Source", relevant)
+                except (ValueError, TypeError):
+                    continue
+                from .news import clean_text
+                source.excerpt = clean_text(relevant)[:5000]
+                if raw:
+                    source.excerpt = (source.excerpt + "\n\n" + clean_text(raw))[:15000].strip()
                 if source.excerpt:
-                    source.content_type = "retrieved_page" if row.get("raw_content") else "provider_excerpt"
+                    source.content_type = "retrieved_page" if raw else "provider_excerpt"
                 if row.get("published_date"):
                     from datetime import datetime, timezone
                     from email.utils import parsedate_to_datetime
                     try:
                         published = datetime.fromisoformat(row["published_date"].replace("Z", "+00:00"))
-                    except ValueError:
+                    except (ValueError, TypeError, AttributeError):
                         try:
                             published = parsedate_to_datetime(row["published_date"])
                         except (ValueError, TypeError):
@@ -404,7 +422,7 @@ class TavilyResearchProvider:
                     if published:
                         source.published_at = published if published.tzinfo else published.replace(tzinfo=timezone.utc)
                 results.append(source)
-            return await resolve_feed_links(results)
+            return await _finalize_sources(self, results, reference=reporting_cutoff)
 
     async def retrieve(self, source: Evidence) -> Evidence:
         content = await retrieve_public_text(source.url)
@@ -434,9 +452,14 @@ class ContentSearchProvider:
         items = []
         for row in body["results"]:
             if not isinstance(row, dict) or not isinstance(row.get("url"), str):
-                raise ValueError("Invalid search result")
+                continue
             content = self.content(row)
-            source = _evidence(row["url"], row.get("title") or "Source", content)
+            try:
+                source = _evidence(row["url"], row.get("title") or "Source", content)
+            except (ValueError, TypeError):
+                continue
+            from .news import clean_text
+            source.excerpt = clean_text(content)[:15000 if row.get("text") else 10000]
             if source.excerpt:
                 source.content_type = "retrieved_page" if row.get("text") else "provider_excerpt"
             published = row.get(self.date_field)
@@ -766,11 +789,11 @@ def _interleave_candidates(groups, limit=36):
                             for group in groups if index < len(group)])[:limit]
 
 
-async def _partial_source_groups(requests):
+async def _partial_source_groups(requests, timeout=None):
     """Return completed sources before the caller's overall discovery timeout."""
     tasks = [asyncio.create_task(request) for request in requests]
     try:
-        done, pending = await asyncio.wait(tasks, timeout=SOURCE_CHILD_SECONDS) if tasks else (set(), set())
+        done, pending = await asyncio.wait(tasks, timeout=SOURCE_CHILD_SECONDS if timeout is None else timeout) if tasks else (set(), set())
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
@@ -1232,7 +1255,7 @@ class CompositeResearchProvider:
             handler = getattr(provider, method + "_candidates", None) or getattr(provider, method, None)
             try:
                 async with source_network_slot():
-                    async with asyncio.timeout(SOURCE_CHILD_SECONDS):
+                    async with asyncio.timeout(_source_timeout(provider)):
                         kwargs = {"max_results": min(max_results, 12), "reporting_cutoff": reporting_cutoff}
                         if handler is None:
                             items = await _probe_call(provider, f"{query} {name or ''} latest news" if method == "search_symbol" else query, **kwargs)
@@ -1244,6 +1267,11 @@ class CompositeResearchProvider:
                 if not isinstance(provider, (SecFilingsResearchProvider, PrimaryFeedResearchProvider, TickerNewsFeedProvider)):
                     record_outcome(provider, _source_id(provider), "passed" if items else "empty", "" if items else "No matching updates")
                 return items
+            except asyncio.CancelledError:
+                ids = provider.sources if isinstance(provider, (PrimaryFeedResearchProvider, TickerNewsFeedProvider)) else (_source_id(provider),)
+                for source in ids:
+                    record_outcome(provider, source, "failed", "Source request timed out")
+                raise
             except Exception as error:
                 ids = provider.sources if isinstance(provider, (PrimaryFeedResearchProvider, TickerNewsFeedProvider)) else (_source_id(provider),)
                 for source in ids:
@@ -1251,7 +1279,8 @@ class CompositeResearchProvider:
                 return []
         # Flatten fallback/feed adapters so each source has an independent bound.
         adapters = [adapter for child in self.providers for adapter in research_tool_sources(child).values()]
-        groups = await _partial_source_groups(collect(adapter) for adapter in adapters)
+        groups = await _partial_source_groups((collect(adapter) for adapter in adapters),
+                                              timeout=max((_source_timeout(adapter) for adapter in adapters), default=SOURCE_CHILD_SECONDS))
         return await _finalize_sources(self, _interleave_candidates(groups), reference=reporting_cutoff)
 
     async def search(self, query: str, max_results: int = 3) -> list[Evidence]:
@@ -1375,14 +1404,24 @@ async def search_asset_query(provider, symbol, name, query, max_results=6, repor
         async def collect(adapter):
             try:
                 async with source_network_slot():
-                    async with asyncio.timeout(SOURCE_CHILD_SECONDS):
-                        return await search_asset_query(adapter, symbol, name, query, max_results, reporting_cutoff)
+                    async with asyncio.timeout(_source_timeout(adapter)):
+                        items = await search_asset_query(adapter, symbol, name, query, max_results, reporting_cutoff)
+                if not isinstance(adapter, (SecFilingsResearchProvider, PrimaryFeedResearchProvider, TickerNewsFeedProvider)):
+                    record_outcome(adapter, _source_id(adapter), "passed" if items else "empty", "" if items else "No matching updates")
+                return items
+            except asyncio.CancelledError:
+                ids = adapter.sources if isinstance(adapter, (PrimaryFeedResearchProvider, TickerNewsFeedProvider)) else (_source_id(adapter),)
+                for source in ids:
+                    record_outcome(adapter, source, "failed", "Source request timed out")
+                raise
             except Exception as error:
                 ids = adapter.sources if isinstance(adapter, (PrimaryFeedResearchProvider, TickerNewsFeedProvider)) else (_source_id(adapter),)
                 for source in ids:
                     record_outcome(adapter, source, "failed", safe_source_error(error))
                 return []
-        groups = await _partial_source_groups(collect(adapter) for child in provider.providers for adapter in research_tool_sources(child).values())
+        adapters = [adapter for child in provider.providers for adapter in research_tool_sources(child).values()]
+        groups = await _partial_source_groups((collect(adapter) for adapter in adapters),
+                                              timeout=max((_source_timeout(adapter) for adapter in adapters), default=SOURCE_CHILD_SECONDS))
         return await _finalize_sources(provider, _interleave_candidates(groups), reference=reporting_cutoff)
     async with source_network_slot():
         return await _finalize_sources(provider, await _search_asset_leaf(provider, symbol, name, query, max_results, reporting_cutoff),
@@ -1421,7 +1460,7 @@ async def probe_research_sources(provider, symbol="AAPL", name=None) -> dict:
     fallback = getattr(provider, "fallback", None)
     async def bounded_probe(request, diagnostic_id=source_id):
         try:
-            items = await asyncio.wait_for(request, timeout=8)
+            items = await asyncio.wait_for(request, timeout=max(8, _source_timeout(provider)))
             record_outcome(provider, diagnostic_id, "passed" if items else "empty", "" if items else "No matching updates")
         except Exception as error:
             record_outcome(provider, diagnostic_id, "failed", safe_source_error(error))

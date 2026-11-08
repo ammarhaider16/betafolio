@@ -159,6 +159,7 @@ class ResearchRuntime:
                 if self.research is None:
                     return []
                 from .engine import _search_events
+                from .providers import source_diagnostics, SourceAccessError
 
                 position = next(
                     (p for p in self.request.snapshot.positions if p.symbol == symbol.upper()), None
@@ -171,6 +172,14 @@ class ResearchRuntime:
                     symbol.upper() or None,
                     position.instrument_name if position else None,
                 )
+                outcomes = source_diagnostics(self.research)
+                if not candidates and outcomes and not any(
+                    item.get("status") in {"passed", "empty"} for item in outcomes.values()
+                ):
+                    reason = next((item.get("reason") for item in outcomes.values()
+                                   if item.get("status") == "failed"), None)
+                    if reason:
+                        raise SourceAccessError("search", reason)
                 return await self.prepare_news(candidates)
 
             return await self.execute(
