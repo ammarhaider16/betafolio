@@ -32,7 +32,9 @@ def safe_source_error(error: Exception) -> str:
     safe_reason = getattr(error, "safe_reason", None)
     if safe_reason:
         return safe_reason
-    if isinstance(error, TimeoutError):
+    import httpx
+
+    if isinstance(error, (TimeoutError, httpx.TimeoutException)):
         return "Source request timed out"
     status = getattr(error, "status_code", None) or getattr(getattr(error, "response", None), "status_code", None)
     return f"HTTP {status}" if isinstance(status, int) else "Source request failed"

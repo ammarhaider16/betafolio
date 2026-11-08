@@ -32,13 +32,13 @@ from .service import (MODEL_PROVIDER_ALIASES, MODEL_PROVIDER_SLOTS, SECRET_ALIAS
                       resolve_secret, secret_status)
 
 MODEL_SECRET_SLOTS = set(MODEL_PROVIDER_SLOTS.values()) | {"model_api_key"}
-DEPLOYMENT_SECRETS = {"tavily_api_key", "smtp_password"}
+DEPLOYMENT_SECRETS = {*SECRET_ALIASES, "smtp_password"}
 
 
 def secret_kind(name):
     if name == "model_api_key" or name in MODEL_SECRET_SLOTS:
         return "model"
-    if name == "tavily_api_key":
+    if name in SECRET_ALIASES:
         return "search"
     if name == "smtp_password":
         return "email"
@@ -293,7 +293,7 @@ def create_app(directory: Path | None = None, server: bool | None = None):
             next_run = (await asyncio.to_thread(next_session_run, datetime.now(timezone.utc), settings.schedule.delay_minutes, settings.schedule.timezone)).isoformat()
         secrets = await asyncio.to_thread(secret_status, settings, service.secrets, server)
         storage = await asyncio.to_thread(service.secrets.storage_status)
-        managed_secrets = ("model_api_key", "tavily_api_key", "smtp_password")
+        managed_secrets = ("model_api_key", *SECRET_ALIASES, "smtp_password")
         return {"snapshot": snapshot.model_dump(mode="json") if snapshot else None,
                 "history": service.history(), "settings": settings.model_dump(mode="json"),
                 "prices": quotes["prices"], "prices_as_of": quotes["as_of"],

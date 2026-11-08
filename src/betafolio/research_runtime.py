@@ -67,6 +67,9 @@ class ResearchRuntime:
         for source in sources:
             previous = next((item for item in self.sources if item.url == source.url), None)
             if previous:
+                from .providers import _dedupe_sources
+
+                source = _dedupe_sources([previous, source])[0]
                 source = source.model_copy(update={"id": previous.id})
                 self.sources[self.sources.index(previous)] = source
             else:
@@ -103,7 +106,8 @@ class ResearchRuntime:
 
         # Source preparation belongs here, not in the analyst's writing workflow.
         async def prepare(source, index):
-            if index < 4 and source.content_type != "retrieved_page" and not is_aggregator_url(source.url):
+            if (index < 4 and not (source.excerpt and source.content_type in {"retrieved_page", "provider_excerpt"})
+                    and not is_aggregator_url(source.url)):
                 try:
                     async with asyncio.timeout(8):
                         content = await self.read_source(source)
@@ -180,7 +184,15 @@ class ResearchRuntime:
                 source = next((item for item in self.sources if item.id == source_id), None)
                 if source is None:
                     return {"message": "Choose a source_id returned by search_news."}
-                text = await self.read_source(source)
+                if source.content_type == "retrieved_page" and source.excerpt:
+                    return [self.present(source)]
+                try:
+                    text = await self.read_source(source)
+                except Exception:
+                    return {"message": "More detail is unavailable; the search content is still available.",
+                            "source": self.present(source)}
+                if not text.strip():
+                    return [self.present(source)]
                 return self.register(
                     [source.model_copy(update={"excerpt": text[:15000], "content_type": "retrieved_page"})]
                 )

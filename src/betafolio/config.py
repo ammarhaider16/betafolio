@@ -46,7 +46,7 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     model: ModelConfig = Field(default_factory=ModelConfig)
     model_enabled: bool = False
-    search_provider: Literal["tavily", "keyless", "disabled"] = "keyless"
+    search_provider: Literal["tavily", "exa", "perplexity", "keyless", "disabled"] = "keyless"
     price_refresh_seconds: int = Field(default=60, ge=15, le=86400)
     primary_feeds_enabled: bool = True
     sec_company_filings_enabled: bool = False

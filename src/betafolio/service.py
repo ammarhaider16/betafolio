@@ -13,7 +13,8 @@ from .config import load_settings
 from .delivery import send_report, send_verification
 from .engine import EngineDependencies, analyze_portfolio
 from .models import AnalysisRequest, AnalysisResult
-from .providers import (CompositeResearchProvider, DDGSResearchProvider, PrimaryFeedResearchProvider,
+from .providers import (CompositeResearchProvider, DDGSResearchProvider, ExaResearchProvider,
+                        PerplexityResearchProvider, PrimaryFeedResearchProvider,
                         SecFilingsResearchProvider, TavilyResearchProvider, TickerNewsFeedProvider,
                         YFinanceMarketDataProvider)
 from .scheduling import latest_eligible_run
@@ -36,6 +37,13 @@ MODEL_PROVIDER_ALIASES = {
 }
 SECRET_ALIASES = {
     "tavily_api_key": ("TAVILY_API_KEY",),
+    "exa_api_key": ("EXA_API_KEY",),
+    "perplexity_api_key": ("PERPLEXITY_API_KEY",),
+}
+SEARCH_PROVIDERS = {
+    "tavily": ("tavily_api_key", TavilyResearchProvider),
+    "exa": ("exa_api_key", ExaResearchProvider),
+    "perplexity": ("perplexity_api_key", PerplexityResearchProvider),
 }
 # Virtual dashboard key; persisted credentials always use a provider-specific slot.
 ACTIVE_MODEL_KEY = "model_api_key"
@@ -178,7 +186,7 @@ def secret_status(settings, store, server=False):
     secrets[ACTIVE_MODEL_KEY] = describe_secret(store, used, (value, source), provider=settings.model.provider,
                                                  saved_at_name=used, env_names=model_env_names(settings.model.provider),
                                                  aliases=active_aliases, server=server)
-    for name in ("tavily_api_key", "smtp_password"):
+    for name in (*SECRET_ALIASES, "smtp_password"):
         aliases = SECRET_ALIASES.get(name, ())
         resolved = resolve_secret(store, name, aliases)
         secrets[name] = describe_secret(store, name, resolved, provider=None, saved_at_name=name,
@@ -202,12 +210,13 @@ def create_model(settings, secret_store, api_key=None):
     return ChatOpenAI(model=selected_model, api_key=key, base_url=base, temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.request_timeout_seconds, max_retries=0)
 
 
-def build_research(settings, secret_store, tavily_key=None):
+def build_research(settings, secret_store, search_key=None):
     fallback = None
-    if settings.search_provider == "tavily":
-        key = read_secret(secret_store, "tavily_api_key") if tavily_key is None else tavily_key
+    if settings.search_provider in SEARCH_PROVIDERS:
+        slot, provider = SEARCH_PROVIDERS[settings.search_provider]
+        key = read_secret(secret_store, slot) if search_key is None else search_key
         if key:
-            fallback = TavilyResearchProvider(key)
+            fallback = provider(key)
     elif settings.search_provider == "keyless":
         fallback = DDGSResearchProvider()
     providers = []
@@ -228,8 +237,8 @@ def build_research(settings, secret_store, tavily_key=None):
     return CompositeResearchProvider(providers) if providers else None
 
 
-def build_dependencies(settings, secret_store, model_key=None, tavily_key=None):
-    research = build_research(settings, secret_store, tavily_key=tavily_key)
+def build_dependencies(settings, secret_store, model_key=None, search_key=None):
+    research = build_research(settings, secret_store, search_key=search_key)
     model = create_model(settings, secret_store, api_key=model_key) if settings.model_enabled else None
     return EngineDependencies(research=research, market_data=YFinanceMarketDataProvider(),
                               history_enabled=True,

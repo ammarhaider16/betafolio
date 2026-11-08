@@ -31,7 +31,7 @@ class FakeKeyring:
 @pytest.fixture(autouse=True)
 def credentials(tmp_path, monkeypatch):
     for key in list(os.environ):
-        if key.startswith('PORTFOLIO_') or key in {'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LITELLM_API_KEY', 'TAVILY_API_KEY'}:
+        if key.startswith('PORTFOLIO_') or key in {'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LITELLM_API_KEY', 'TAVILY_API_KEY', 'EXA_API_KEY', 'PERPLEXITY_API_KEY'}:
             monkeypatch.delenv(key)
     monkeypatch.setitem(sys.modules, 'keyring', FakeKeyring())
 
@@ -179,3 +179,28 @@ def test_test_endpoint_rejects_whitespace_value(tmp_path):
     with TestClient(create_app(tmp_path), base_url='http://127.0.0.1:8000') as client:
         response = post(client, csrf(client), '/api/test/model', {'value': '   '})
         assert response.status_code == 400
+
+
+@pytest.mark.parametrize("provider", ["exa", "perplexity"])
+def test_search_key_save_status_and_ephemeral_probe(tmp_path, monkeypatch, provider):
+    from betafolio import providers
+
+    async def probe(research, **kwargs):
+        adapter = providers.research_tool_sources(research)["search"]
+        assert adapter.api_key == "temporary-key"
+        return {"search": {"status": "passed", "reason": ""}}
+
+    monkeypatch.setattr(providers, "probe_research_sources", probe)
+    with TestClient(create_app(tmp_path), base_url='http://127.0.0.1:8000') as client:
+        token = csrf(client)
+        assert post(client, token, '/api/settings', {'search_provider': provider, 'primary_feeds_enabled': False,
+                                                   'ticker_news_enabled': False}).status_code == 200
+        slot = f'{provider}_api_key'
+        assert post(client, token, f'/api/secrets/{slot}', {'value': 'saved-key'}).status_code == 200
+        response = post(client, token, '/api/test/search', {'value': 'temporary-key'})
+        assert response.status_code == 200 and response.json()['ok']
+        status = client.get('/api/status')
+        assert status.json()['secrets'][slot]['present']
+        assert 'saved-key' not in status.text and 'temporary-key' not in status.text
+        assert client.app.state.service.secrets.get(slot) == 'saved-key'
+        assert 'search' not in status.json()['connection_tests']

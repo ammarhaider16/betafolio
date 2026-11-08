@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 
 def revision(app, kind):
-    from .service import read_secret, resolve_model_key
+    from .service import read_secret, resolve_model_key, SEARCH_PROVIDERS
 
     settings = app.settings
     if kind == "model":
@@ -26,7 +26,8 @@ def revision(app, kind):
                     "news_feed_sources",
                 )
             },
-            read_secret(app.secrets, "tavily_api_key"),
+            read_secret(app.secrets, SEARCH_PROVIDERS[settings.search_provider][0])
+            if settings.search_provider in SEARCH_PROVIDERS else None,
         ]
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
@@ -40,7 +41,7 @@ def cached(app, kind):
 
 
 def readiness(app):
-    from .service import read_secret, resolve_model_key
+    from .service import read_secret, resolve_model_key, SEARCH_PROVIDERS
 
     settings = app.settings
     issues = []
@@ -66,7 +67,8 @@ def readiness(app):
         elif model.get("status") != "passed":
             issue("model", "Your model connection needs attention. Open Connections and test it again.", True)
     try:
-        search_key = read_secret(app.secrets, "tavily_api_key")
+        slot = SEARCH_PROVIDERS.get(settings.search_provider, (None,))[0]
+        search_key = read_secret(app.secrets, slot) if slot else None
     except Exception:
         search_key = None
     available = settings.search_provider != "disabled" and (
@@ -95,7 +97,7 @@ def readiness(app):
 
 
 async def check(app, kind, value=None):
-    from .service import probe_model_readiness, build_research
+    from .service import probe_model_readiness, build_research, read_secret, SEARCH_PROVIDERS
 
     stamp = datetime.now(timezone.utc).isoformat()
     before = revision(app, kind)
@@ -106,7 +108,7 @@ async def check(app, kind, value=None):
         from .providers import probe_research_sources
 
         settings = app.settings
-        research = build_research(settings, app.secrets, tavily_key=value)
+        research = build_research(settings, app.secrets, search_key=value)
         snapshot = app.store.snapshot()
         position = snapshot.positions[0] if snapshot and snapshot.positions else None
         async with asyncio.timeout(35):
@@ -126,6 +128,14 @@ async def check(app, kind, value=None):
                 for feed in ("google_news", "nasdaq", "bing_news")
             },
         }
+        if settings.search_provider in SEARCH_PROVIDERS:
+            slot = SEARCH_PROVIDERS[settings.search_provider][0]
+            if not (value or read_secret(app.secrets, slot)):
+                outcomes["search"] = {
+                    "status": "failed",
+                    "reason": f"Add a {settings.search_provider.title()} API key in Connections.",
+                    "tested_at": stamp,
+                }
         for source, enabled in active.items():
             outcomes.setdefault(
                 source,

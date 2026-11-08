@@ -58,3 +58,33 @@ async def test_failing_model_blocks_sources_and_run_creation(configured, monkeyp
         configured.submit()
     assert calls == ['model']
     assert configured.store.history() == []
+
+
+@pytest.mark.parametrize("name", ["exa", "perplexity"])
+async def test_search_key_selection_and_revision(configured, monkeypatch, name):
+    from betafolio.connections import cached
+
+    keys = {"tavily_api_key": "unrelated", "model_api_key_custom": "model-key"}
+    monkeypatch.setattr(SecretStore, "get", lambda self, slot: keys.get(slot))
+    settings = configured.settings
+    settings.search_provider = name
+    settings.primary_feeds_enabled = settings.ticker_news_enabled = False
+    save_settings(configured.directory, settings)
+    result = await configured.test_connection("search")
+    assert not result["ok"]
+    assert "API key" in result["sources"]["search"]["reason"]
+    keys[f"{name}_api_key"] = "selected-key"
+
+    async def probe(research, **kwargs):
+        selected = providers.research_tool_sources(research)["search"]
+        assert selected.api_key == "selected-key"
+        assert isinstance(selected, service.SEARCH_PROVIDERS[name][1])
+        return {"search": {"status": "empty", "reason": ""}}
+
+    monkeypatch.setattr(providers, "probe_research_sources", probe)
+    assert (await configured.test_connection("search"))["ok"]
+    assert cached(configured, "search")
+    keys["tavily_api_key"] = "unrelated-change"
+    assert cached(configured, "search")
+    keys[f"{name}_api_key"] = "replacement"
+    assert not cached(configured, "search")

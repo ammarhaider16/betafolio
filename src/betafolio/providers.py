@@ -354,6 +354,16 @@ async def _finalize_sources(provider, items, reference=None):
     return await resolve_feed_links(kept)
 
 
+def _check_search_response(response):
+    reasons = {401: "API key is invalid; update it in Connections.",
+               403: "Access denied; check this API key's permissions in Connections.",
+               402: "Search credits unavailable; check your provider account.",
+               429: "Search quota or rate limit reached; check your provider account or try later."}
+    if response.status_code in reasons:
+        raise SourceAccessError("search", reasons[response.status_code])
+    response.raise_for_status()
+
+
 class TavilyResearchProvider:
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -367,7 +377,7 @@ class TavilyResearchProvider:
     async def _search(self, query: str, max_results: int, *, topic: str, reporting_cutoff=None) -> list[Evidence]:
         import httpx
         payload = {"api_key": self.api_key, "query": query, "max_results": max_results,
-                   "search_depth": "basic", "topic": topic}
+                   "search_depth": "basic", "topic": topic, "include_raw_content": "text"}
         if topic == "news":
             if reporting_cutoff is None:
                 payload["time_range"] = "month"
@@ -375,10 +385,12 @@ class TavilyResearchProvider:
                 payload["end_date"] = reporting_cutoff.date().isoformat()
         async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
             response = await client.post("https://api.tavily.com/search", json=payload)
-            response.raise_for_status()
+            _check_search_response(response)
             results = []
             for row in response.json().get("results", []):
-                source = _evidence(row["url"], row.get("title", "Source"), row.get("content", ""))
+                source = _evidence(row["url"], row.get("title", "Source"), row.get("raw_content") or row.get("content", ""))
+                if source.excerpt:
+                    source.content_type = "retrieved_page" if row.get("raw_content") else "provider_excerpt"
                 if row.get("published_date"):
                     from datetime import datetime, timezone
                     from email.utils import parsedate_to_datetime
@@ -397,6 +409,81 @@ class TavilyResearchProvider:
     async def retrieve(self, source: Evidence) -> Evidence:
         content = await retrieve_public_text(source.url)
         return source.model_copy(update={"excerpt": content, "content_type": "retrieved_page"})
+
+
+class ContentSearchProvider:
+    """Search APIs that return extracted passages, without a second publisher fetch."""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    async def search(self, query: str, max_results: int = 3) -> list[Evidence]:
+        return await self.search_events(query, max_results=max_results)
+
+    async def search_events(self, query: str, max_results: int = 3, reporting_cutoff=None) -> list[Evidence]:
+        import httpx
+        from datetime import datetime, timezone
+
+        payload = self.payload(query, max_results, reporting_cutoff)
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            response = await client.post(self.endpoint, headers=self.headers(), json=payload)
+            _check_search_response(response)
+            body = response.json()
+        if not isinstance(body, dict) or not isinstance(body.get("results"), list):
+            raise ValueError("Invalid search response")
+        items = []
+        for row in body["results"]:
+            if not isinstance(row, dict) or not isinstance(row.get("url"), str):
+                raise ValueError("Invalid search result")
+            content = self.content(row)
+            source = _evidence(row["url"], row.get("title") or "Source", content)
+            if source.excerpt:
+                source.content_type = "retrieved_page" if row.get("text") else "provider_excerpt"
+            published = row.get(self.date_field)
+            if published:
+                try:
+                    stamp = datetime.fromisoformat(published.replace("Z", "+00:00"))
+                    source.published_at = stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError, AttributeError):
+                    pass
+            items.append(source)
+        return await _finalize_sources(self, items, reference=reporting_cutoff)
+
+
+class ExaResearchProvider(ContentSearchProvider):
+    endpoint = "https://api.exa.ai/search"
+    date_field = "publishedDate"
+
+    def headers(self):
+        return {"x-api-key": self.api_key}
+
+    def payload(self, query, max_results, cutoff):
+        payload = {"query": query, "type": "auto", "numResults": min(max_results, 10),
+                   "contents": {"highlights": True}}
+        if cutoff is not None:
+            payload["endPublishedDate"] = cutoff.isoformat()
+        return payload
+
+    def content(self, row):
+        return row.get("text") or "\n".join(row.get("highlights") or [])
+
+
+class PerplexityResearchProvider(ContentSearchProvider):
+    endpoint = "https://api.perplexity.ai/search"
+    date_field = "date"
+
+    def headers(self):
+        return {"Authorization": f"Bearer {self.api_key}"}
+
+    def payload(self, query, max_results, cutoff):
+        payload = {"query": query, "max_results": min(max_results, 10),
+                   "max_tokens_per_page": 2048, "max_tokens": 12000}
+        if cutoff is not None:
+            payload["search_before_date_filter"] = cutoff.strftime("%m/%d/%Y")
+        return payload
+
+    def content(self, row):
+        return row.get("snippet") or ""
 
 
 class DDGSResearchProvider:
@@ -660,11 +747,12 @@ class PrimaryFeedResearchProvider:
 def _dedupe_sources(sources: list[Evidence]) -> list[Evidence]:
     indices: dict[str, int] = {}
     unique: list[Evidence] = []
-    grades = {"search_excerpt": 0, "news_feed": 1, "retrieved_page": 2, "official_feed": 2}
+    grades = {"search_excerpt": 0, "news_feed": 1, "provider_excerpt": 2, "retrieved_page": 3, "official_feed": 2}
     for source in sources:
         if source.url in indices:
             index = indices[source.url]
-            if grades.get(source.content_type, 0) > grades.get(unique[index].content_type, 0):
+            current = unique[index]
+            if (grades.get(source.content_type, 0), len(source.excerpt)) > (grades.get(current.content_type, 0), len(current.excerpt)):
                 unique[index] = source
             continue
         indices[source.url] = len(unique)

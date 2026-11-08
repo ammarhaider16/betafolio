@@ -21,7 +21,7 @@ def read_static(name):
 def isolated_credentials(monkeypatch):
     values = {}
     for key in list(os.environ):
-        if key.startswith(('PORTFOLIO_',)) or key in {'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LITELLM_API_KEY', 'TAVILY_API_KEY'}:
+        if key.startswith(('PORTFOLIO_',)) or key in {'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LITELLM_API_KEY', 'TAVILY_API_KEY', 'EXA_API_KEY', 'PERPLEXITY_API_KEY'}:
             monkeypatch.delenv(key)
     monkeypatch.setattr(SecretStore, 'get', lambda self, name: os.environ.get('PORTFOLIO_SECRET_' + name.upper(), values.get(name)))
     monkeypatch.setattr(SecretStore, 'set', lambda self, name, value: values.__setitem__(name, value))

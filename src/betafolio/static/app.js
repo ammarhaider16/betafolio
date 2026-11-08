@@ -316,12 +316,15 @@ function renderAllocation(snapshot) {
   $('#allocation-note').textContent=omittedNames.length?`${exclusion} from known value and allocation. ${priceNote()}`:priceNote();
 }
 
+const SEARCH_PROVIDERS={tavily:{label:'Tavily',field:'key'},exa:{label:'Exa',field:'exa_key'},perplexity:{label:'Perplexity',field:'perplexity_key'}};
+function showSearchFields(provider){for(const name of Object.keys(SEARCH_PROVIDERS))$(`#${name}-fields`).hidden=name!==provider;}
+
 function updateResearchReadiness() {
   if(!state)return;
   const settings=state.settings, tests=state.connection_tests||{}, hasPortfolio=Boolean(state.snapshot);
   const context=JSON.stringify([settings.model,settings.model_enabled,state.secrets?.model_api_key]);
   if(modelTestContext!==context){const results=$('#readiness-state');results.hidden=true;results.replaceChildren();delete results.dataset.testedAt;delete results.dataset.testing;modelTestContext=context;}
-  const searchConfigured=settings.search_provider==='keyless'||(settings.search_provider==='tavily'&&state.secrets_present.tavily_api_key)||(settings.search_provider!=='disabled'&&(settings.primary_feeds_enabled||settings.sec_company_filings_enabled||settings.ticker_news_enabled));
+  const searchConfigured=settings.search_provider==='keyless'||(SEARCH_PROVIDERS[settings.search_provider]&&state.secrets_present[`${settings.search_provider}_api_key`])||(settings.search_provider!=='disabled'&&(settings.primary_feeds_enabled||settings.sec_company_filings_enabled||settings.ticker_news_enabled));
   const modelConfigured=settings.model_enabled&&state.secrets_present.model_api_key;
   const sourceTests=tests.search?.sources;
   const testedWorkingSources=Object.values(sourceTests||{}).filter(item=>['passed','empty'].includes(item.status)).length;
@@ -333,7 +336,7 @@ function updateResearchReadiness() {
   const chips=$('#source-states');chips.replaceChildren();
   const enabled=settings.search_provider!=='disabled';
   const sourceSettings={search:enabled,fed:enabled&&settings.primary_feeds_enabled,sec_filings:enabled&&settings.sec_company_filings_enabled,google_news:enabled&&settings.ticker_news_enabled&&(settings.news_feed_sources||[]).includes('google_news'),nasdaq:enabled&&settings.ticker_news_enabled&&(settings.news_feed_sources||[]).includes('nasdaq'),bing_news:enabled&&settings.ticker_news_enabled&&(settings.news_feed_sources||[]).includes('bing_news')};
-  const sourceLabels={search:settings.search_provider==='tavily'?'Tavily':'DDGS web search',fed:'Federal Reserve',sec_filings:'SEC filings',google_news:'Google News',nasdaq:'Nasdaq',bing_news:'Bing News'};
+  const sourceLabels={search:SEARCH_PROVIDERS[settings.search_provider]?.label||'DDGS web search',fed:'Federal Reserve',sec_filings:'SEC filings',google_news:'Google News',nasdaq:'Nasdaq',bing_news:'Bing News'};
   for(const [name,active] of Object.entries(sourceSettings)){
     const result=sourceTests?.[name];const chip=document.createElement('span');chip.className='badge';
     const status=result?.status||(!active?'disabled':name==='sec_filings'&&!settings.sec_contact?'skipped':'not tested');
@@ -342,7 +345,7 @@ function updateResearchReadiness() {
     chips.append(chip);
   }
   updateSecAvailability();
-  $('#tavily-fields').hidden=settings.search_provider!=='tavily';
+  showSearchFields($('#research-form').elements.search_provider.value);
   const newsSources=$('#news-source-fields'); if(newsSources) newsSources.hidden=!settings.ticker_news_enabled;
   const readiness=state.research_readiness;
   const connectionStatus=$('#research-connection-status');connectionStatus.replaceChildren();
@@ -485,6 +488,7 @@ async function refresh(populate=false) {
     }
     if(managed.length) $('#managed-settings').textContent=`Managed by your deployment (read-only here): ${managed.join(', ')}.`;
   }
+  showSearchFields($('#research-form').elements.search_provider.value);
   renderSecretFields();
   updateSecAvailability();
   renderSecretStorage();
@@ -519,7 +523,7 @@ async function save(body, quiet=false) {for(const key of state.externally_manage
 const PROVIDER_LABELS={openai:'OpenAI',anthropic:'Anthropic',custom:'Custom OpenAI-compatible'};
 const SECRET_FIELDS=[
   {form:'#model-form',field:'key',key:'model_api_key',test:'model',title:'model'},
-  {form:'#research-form',field:'key',key:'tavily_api_key',test:'search',title:'Tavily'},
+  ...Object.entries(SEARCH_PROVIDERS).map(([name,provider])=>({form:'#research-form',field:provider.field,key:`${name}_api_key`,test:'search',searchProvider:name,title:provider.label})),
   {form:'#email-form',field:'password',key:'smtp_password',title:'mail password'}
 ];
 function secretText(info) {
@@ -551,7 +555,7 @@ function renderSecretFields(force=false) {
       const text=document.createElement('span');text.className='secret-status-text';
       const change=button('Change secret',()=>{input.hidden=false;input.dataset.editing='true';input.placeholder='Enter replacement secret';cancel.hidden=false;input.focus();});change.classList.add('secret-change');
       const remove=button('Remove key',async()=>{if(!window.confirm(`Remove the saved ${spec.title} key?`))return;await api(`/api/secrets/${spec.key}`,undefined,'DELETE');input.value='';input.dataset.editing='false';await refresh();notice('Key removed.');});remove.classList.add('secret-remove');
-      const test=button('Test this key',async()=>{const value=input.value.trim();if(!value){notice('Type a key first, or Save to persist it.',true);return;}if(spec.test==='model')renderReadiness(null);const result=await api(`/api/test/${spec.test}`,{value});if(spec.test==='model')renderReadiness(result);else notice(result.message);});test.classList.add('secret-test');
+      const test=button('Test this key',async()=>{if(spec.searchProvider&&spec.searchProvider!==state.settings.search_provider){notice('Save your selected search provider before testing its key.',true);return;}const value=input.value.trim();if(!value){notice('Type a key first, or Save to persist it.',true);return;}if(spec.test==='model')renderReadiness(null);const result=await api(`/api/test/${spec.test}`,{value});if(spec.test==='model')renderReadiness(result);else notice(result.message);});test.classList.add('secret-test');
       const cancel=button('Cancel',()=>{input.value='';input.dataset.editing='false';renderSecretFields(true);});cancel.classList.add('secret-cancel');
       box.append(text,change,remove,test,cancel);label.append(box);
     }
@@ -647,10 +651,10 @@ if($('#login-form')) {
     notice('Model settings saved.');
   }));
   $('#research-form').addEventListener('submit',action(async()=>{
-    const data=values('#research-form'), tavily=(data.key||'').trim();
+    const data=values('#research-form'), provider=SEARCH_PROVIDERS[data.search_provider], key=provider?(data[provider.field]||'').trim():'';
     await save({search_provider:data.search_provider,sec_contact:data.sec_contact,primary_feeds_enabled:checked('#research-form','primary_feeds_enabled'),sec_company_filings_enabled:checked('#research-form','sec_company_filings_enabled'),ticker_news_enabled:checked('#research-form','ticker_news_enabled'),news_feed_sources:['google_news','nasdaq','bing_news'].filter(name=>checked('#research-form',`news_source_${name}`)),price_refresh_seconds:Number(data.price_refresh_seconds)},true);
     // Only store a provider's key when that provider is actually selected.
-    if(data.search_provider==='tavily'&&tavily){await api('/api/secrets/tavily_api_key',{value:tavily});const input=$('#research-form').elements.key;input.value='';input.dataset.editing='false';}
+    if(provider&&key){await api(`/api/secrets/${data.search_provider}_api_key`,{value:key});const input=$('#research-form').elements[provider.field];input.value='';input.dataset.editing='false';}
     await refresh(); notice('Research settings saved.');
   }));
   document.querySelectorAll('[data-test]').forEach(el=>el.addEventListener('click',action(async()=>{
@@ -659,7 +663,7 @@ if($('#login-form')) {
     catch(error){if(el.dataset.test==='model')renderReadinessError(error.message);else throw error;}
     finally{el.disabled=false;await refresh();}
   })));
-  $('#research-form').elements.search_provider.addEventListener('change',()=>{$('#tavily-fields').hidden=$('#research-form').elements.search_provider.value!=='tavily';});
+  $('#research-form').elements.search_provider.addEventListener('change',()=>showSearchFields($('#research-form').elements.search_provider.value));
   $('#research-form').elements.sec_company_filings_enabled.addEventListener('change',event=>{event.target.dataset.userSelected='true';updateSecAvailability();});
   $('#research-form').elements.sec_contact.addEventListener('input',event=>{
     const box=$('#research-form').elements.sec_company_filings_enabled;

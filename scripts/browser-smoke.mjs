@@ -49,6 +49,19 @@ try {
   await evaluate(`renderResearchActivity({id:'smoke-activity',status:'running',research_activity:[{tool:'search_news',symbol:'VTI',query:'fund benchmark changes',status:'passed'}]})`);
   if(!(await evaluate('!document.querySelector("#research-activity").hidden && document.querySelector("#activity-entries").textContent.includes("VTI") && !document.querySelector("#activity-budget")'))) throw new Error('Run trace is missing or resource counters are visible');
   await evaluate('renderResearchActivity(null);refresh(true)');
+  for(const provider of ['exa','perplexity']) {
+    await evaluate(`(()=>{window.smokeSearchCalls=[];window.smokeSearchApi=window.api;window.api=async(...args)=>{if(args[0].startsWith('/api/secrets/')||args[0]==='/api/test/search'){window.smokeSearchCalls.push(args);return {ok:true,message:'Search smoke passed'};}return window.smokeSearchApi(...args);};notice('');const form=document.querySelector('#research-form');form.elements.search_provider.value='${provider}';form.elements.search_provider.dispatchEvent(new Event('change'));updateResearchReadiness();})()`);
+    if(!(await evaluate(`!document.querySelector('#${provider}-fields').hidden && document.querySelector('#${provider==='exa'?'perplexity':'exa'}-fields').hidden`))) throw new Error('Selected search key field is not visible');
+    await evaluate(`document.querySelector('#research-form').elements['${provider}_key'].value='smoke-${provider}';document.querySelector('#research-form').requestSubmit()`);
+    await waitFor(`state.settings.search_provider==='${provider}' && document.querySelector('#notice').textContent.includes('Research settings saved')`);
+    if(!(await evaluate(`window.smokeSearchCalls.some(call=>call[0]==='/api/secrets/${provider}_api_key'&&call[1].value==='smoke-${provider}')`))) throw new Error('Search key saved to wrong provider slot');
+    await evaluate(`document.querySelector('[data-test=search]').click()`);
+    await waitFor(`window.smokeSearchCalls.some(call=>call[0]==='/api/test/search')`);
+    await evaluate(`state.secrets['${provider}_api_key']={present:true,source:'keyring',editable:true};renderSecretFields(true)`);
+    if(!(await evaluate(`document.querySelector('#research-form').elements['${provider}_key'].hidden && document.querySelector('#${provider}-fields .secret-status-text').textContent.includes('saved')`))) throw new Error('Saved search key status is not masked');
+    await evaluate('window.api=window.smokeSearchApi;delete window.smokeSearchApi');
+  }
+  await evaluate("api('/api/settings',{search_provider:'keyless'}).then(()=>refresh(true))");
   await evaluate(`state.secrets_present.tavily_api_key=true;state.secrets.tavily_api_key={present:true,source:'keyring',saved_at:new Date().toISOString(),provider:null,editable:true,managed_by:null,env:['PORTFOLIO_SECRET_TAVILY_API_KEY']};renderSecretFields(true)`);
   if(!(await evaluate('document.querySelector("#research-form input[name=key]").hidden && /key saved/i.test(document.querySelector("#tavily-fields .secret-status").textContent)'))) throw new Error('Saved research secret is not masked');
   await evaluate('document.querySelector("#tavily-fields .secret-status .secret-change").click()');
