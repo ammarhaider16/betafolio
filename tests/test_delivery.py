@@ -76,3 +76,22 @@ def test_report_renders_emphasis_in_lists_and_tables_without_leaking_markers():
     html, text = render_report(value)
     assert '<strong>Apple:</strong>' in html and '<strong>AAPL</strong>' in html
     assert '<table>' in html and '**' not in html + text
+
+
+def test_report_preserves_bullet_lines_in_html_and_plain_text():
+    from bs4 import BeautifulSoup
+    value = report()
+    value.sections = [ReportSection(heading='Watch list', content=(
+        'Key items:\n\u2022 **Apple:** watch demand.\n\u2022 Cash remains available.\n\n'
+        '3. Earnings update\n4. Product launch\n\n'
+        'Normal **inline emphasis** stays together.\n\n'
+        '```text\n\u2022 This stays code\n```'
+    ))]
+    html, text = render_report(value)
+    soup = BeautifulSoup(html, 'html.parser')
+    assert [item.get_text() for item in soup.select('ul > li')] == [
+        'Apple: watch demand.', 'Cash remains available.']
+    assert '- Apple: watch demand.\n- Cash remains available.' in text
+    assert '3. Earnings update\n4. Product launch' in text
+    assert 'Normal inline emphasis stays together.' in text
+    assert soup.select_one('pre code').get_text() == '\u2022 This stays code\n'

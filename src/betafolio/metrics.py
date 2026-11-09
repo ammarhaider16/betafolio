@@ -53,6 +53,45 @@ def calculate_metrics(snapshot: PortfolioSnapshot) -> dict:
     }
 
 
+def briefing_financial_facts(metrics: dict) -> dict:
+    """Give the writer explicit units and full-size, Decimal-formatted owner amounts."""
+    def money(value, *, change=False):
+        if value is None:
+            return None
+        amount = Decimal(str(value))
+        if not amount.is_finite():
+            return None
+        sign = '-' if amount < 0 else '+' if change and amount > 0 else ''
+        return f"{sign}${abs(amount):,.2f}"
+
+    return {
+        "reporting_currency": "USD",
+        "amount_scale": "Whole dollars, never thousands or millions; no currency conversion is performed.",
+        "percentage_scale": "Percentage units, not fractions: 9.7 means 9.70%, not 970%.",
+        "known_portfolio_value": money(metrics.get('known_value')),
+        "cash": money(metrics.get('cash')),
+        "holdings_price_change_estimate": money(metrics.get('daily_price_change_estimate'), change=True),
+        "change_meaning": "Estimated value change for saved quantities versus previous close, not realized profit or measured account performance.",
+        "valuation_complete": metrics.get('coverage_complete', False),
+        "daily_change_complete": metrics.get('daily_change_complete', False),
+        "positions": {
+            symbol: {
+                "holding_value": money(value),
+                "holding_price_contribution": money(metrics.get('daily_price_contributions', {}).get(symbol), change=True),
+            }
+            for symbol, value in metrics.get('position_values', {}).items()
+        },
+        "quotes": [
+            {"symbol": row['symbol'], "price_per_share": money(row.get('price')),
+             "previous_close_per_share": money(row.get('previous_close')),
+             "security_price_move": f"{row['daily_change_pct']:+.2f}%" if row.get('daily_change_pct') else
+                 '0.00%' if row.get('daily_change_pct') == 0 else None,
+             "price_session": row.get('price_session')}
+            for row in metrics.get('position_details', [])
+        ],
+    }
+
+
 def historical_risk(snapshot: PortfolioSnapshot, histories: dict[str, dict[str, float]]) -> dict:
     """Estimate daily-rebalanced current-weight risk on shared historical dates."""
     metrics = calculate_metrics(snapshot)

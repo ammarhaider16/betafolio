@@ -61,6 +61,7 @@ class ResearchRuntime:
     def present(self, source):
         return {
             "id": source.id,
+            "id_usage": "Tool handle for read_article only; never include it in the briefing. Attribute to publisher when useful.",
             "title": source.title,
             "publisher": source.publisher,
             "published_at": source.published_at.isoformat() if source.published_at else None,
@@ -252,7 +253,10 @@ class ResearchRuntime:
                 ticker = Position.normalize_symbol(symbol)
                 quotes = await self.market_data.quotes([ticker])
                 identity = await self.market_data.resolve_instrument(ticker)
-                return model_data({"quote": quotes.get(ticker), "instrument": identity})
+                return model_data({"quote": quotes.get(ticker), "instrument": identity,
+                                   "units": {"price": "Per unit of the instrument, not total holding value",
+                                             "previous_close": "Per unit of the instrument",
+                                             "currency": "Provider quote currency; no FX conversion. Do not infer owner amounts from this quote."}})
 
             return await self.execute("get_market_data", operation, symbol=symbol.upper())
 

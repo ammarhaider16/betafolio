@@ -80,8 +80,23 @@ def _prose(text):
     # Model content remains text. Render standard formatting consistently in
     # paragraphs, lists and tables; raw HTML is escaped, images are disabled.
     renderer = MarkdownIt("commonmark", {"html": False}).enable("table").disable("image")
+    # Typographic bullets are valid editorial text but not Markdown list markers.
+    # Normalize line-leading bullets only, preserving fenced code verbatim.
+    lines = _clean(text).splitlines()
+    fence = None
+    for index, line in enumerate(lines):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            run = marker.group(1)
+            if fence is None:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence):
+                fence = None
+            continue
+        if fence is None:
+            lines[index] = re.sub(r"^( {0,3})[\u2022\u25cf\u25aa][ \t\u00a0\u202f]+", r"\1- ", line)
     return (
-        renderer.render(_clean(text))
+        renderer.render("\n".join(lines))
         .replace("<table>", '<div class="table-scroll"><table>')
         .replace("</table>", "</table></div>")
     )
@@ -90,7 +105,25 @@ def _prose(text):
 def _plain(text):
     from bs4 import BeautifulSoup
 
-    return BeautifulSoup(_prose(text), "html.parser").get_text(" ", strip=True)
+    soup = BeautifulSoup(_prose(text), "html.parser")
+    for br in soup.find_all('br'):
+        br.replace_with('\n')
+    for item in soup.find_all('li'):
+        parent = item.parent
+        if parent and parent.name == 'ol':
+            siblings = parent.find_all('li', recursive=False)
+            marker = f"{int(parent.get('start', 1)) + siblings.index(item)}. "
+        else:
+            marker = '- '
+        # Loose Markdown lists wrap item text in a paragraph.
+        (item.find('p', recursive=False) or item).insert(0, marker)
+    for cell in soup.find_all(['td', 'th']):
+        cell.append('\t')
+    for block in soup.find_all(['p', 'div', 'ul', 'ol', 'blockquote', 'pre', 'tr',
+                                'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+        block.append('\n')
+    rendered = '\n'.join(line.strip() for line in soup.get_text().splitlines())
+    return re.sub(r'\n{3,}', '\n\n', rendered).strip()
 
 
 def signed_number(value, *, prefix="", suffix=""):

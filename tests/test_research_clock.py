@@ -93,6 +93,8 @@ async def test_model_and_tools_share_selected_clock_without_execution_date_or_li
     assert result.metrics['known_value'] == '700' and result.research_as_of == as_of
     assert saved.positions[0].price == 999 and saved.as_of == wall
     initial = json.loads(seen[0]['messages'][1]['content'])
+    assert initial['financial_facts']['known portfolio value'] == '$700.00'
+    assert initial['financial_facts']['positions']['AAPL']['holding value'] == '$200.00'
     assert initial['research_as_of'] == as_of.isoformat() and initial['portfolio']['as_of'].startswith('2020-01-03')
     inputs = json.dumps([message for call in seen for message in call['messages'] if message['role'] in ('user','tool')])
     assert wall.isoformat() not in inputs and 'FUTURE_RENAME' not in inputs and 'FUTURE_SECTOR' not in inputs
