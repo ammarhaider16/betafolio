@@ -9,6 +9,7 @@ import smtplib
 import ssl
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
+from .metrics import daily_change_pct
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -92,6 +93,14 @@ def _plain(text):
     return BeautifulSoup(_prose(text), "html.parser").get_text(" ", strip=True)
 
 
+def signed_number(value, *, prefix="", suffix=""):
+    from decimal import Decimal
+
+    rounded = Decimal(str(value)).quantize(Decimal("0.01"))
+    sign = "+" if rounded > 0 else "-" if rounded < 0 else ""
+    return f"{sign}{prefix}{abs(rounded):,.2f}{suffix}"
+
+
 def render_report(
     result: Any, percent_only: bool = False, embed: bool = False, timezone: str = "America/New_York"
 ):
@@ -139,17 +148,12 @@ def render_report(
             changes = metrics.get("daily_price_contributions") or {}
             for row in positions:
                 price = f"${float(row['price']):,.2f}" if row.get("price") is not None else "Unavailable"
-                change = (
-                    (float(row["price"]) / float(row["previous_close"]) - 1) * 100
-                    if row.get("current_session")
-                    and row.get("price") is not None
-                    and row.get("previous_close")
-                    and float(row["previous_close"]) > 0
-                    else None
+                change = row.get("daily_change_pct") if "daily_change_pct" in row else daily_change_pct(
+                    row.get("price"), row.get("previous_close"), row.get("current_session")
                 )
-                daily = f"{change:+.2f}%" if change is not None else "Unavailable"
+                daily = signed_number(change, suffix="%") if change is not None else "Unavailable"
                 amount = (
-                    f"${float(changes[row['symbol']]):+,.2f}"
+                    signed_number(changes[row['symbol']], prefix="$")
                     if row["symbol"] in changes and change is not None
                     else "—"
                 )

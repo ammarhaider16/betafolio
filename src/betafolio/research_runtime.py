@@ -161,9 +161,17 @@ class ResearchRuntime:
     def tools(self):
         from langchain_core.tools import StructuredTool
 
-        async def search_news(query: Annotated[str, Field(min_length=1, max_length=1000)],
-                              symbol: Annotated[str, Field(max_length=40)] = "") -> list | dict:
-            """Find news or research on any topic or asset. Returns publisher, date and prepared readable content."""
+        async def search_news(query: Annotated[str, Field(min_length=1, max_length=1000,
+                              description="Public research terms: instrument, event or market topic. Never include private portfolio data.")],
+                              symbol: Annotated[str, Field(max_length=40,
+                              description="Optional ticker for asset-specific search; leave empty for broad market topics.")] = "") -> list | dict:
+            """Find recent reporting to investigate a portfolio development or material information gap.
+
+            Returns source id, title, publisher, publication date (possibly unknown) and prepared
+            readable content within the configured research window. Use ids for read_article if
+            more detail would resolve uncertainty. An empty list means no usable results from this
+            lookup, not that no news exists. A message may report unavailability or ask you to finish.
+            """
 
             async def operation():
                 if self.research is None:
@@ -196,8 +204,14 @@ class ResearchRuntime:
                 "search_news", operation, discovery=True, query=query[:1000], symbol=symbol.upper()
             )
 
-        async def read_article(source_id: Annotated[str, Field(min_length=1, max_length=128)]) -> dict | list:
-            """Read more detail from a news item returned by search_news."""
+        async def read_article(source_id: Annotated[str, Field(min_length=1, max_length=128,
+                               description="Exact id from supplied news or a search_news result; not a URL.")]) -> dict | list:
+            """Expand a collected source when its prepared content does not resolve a material question.
+
+            Returns source metadata and readable content, or a message when additional detail is
+            unavailable. Already retrieved pages may be reused. For a past research date only
+            previously supplied content is available; this tool cannot fetch later page content.
+            """
 
             async def operation():
                 source = next((item for item in self.sources if item.id == source_id), None)
@@ -220,8 +234,15 @@ class ResearchRuntime:
 
             return await self.execute("read_article", operation, source=source_id)
 
-        async def get_market_data(symbol: Annotated[str, Field(min_length=1, max_length=40)]) -> dict:
-            """Get the current available quote, previous session close and instrument identity for a ticker."""
+        async def get_market_data(symbol: Annotated[str, Field(min_length=1, max_length=40,
+                                 description="Public instrument ticker to look up, such as AAPL or SPY.")]) -> dict:
+            """Look up a missing quote or instrument identity, or a relevant comparison instrument.
+
+            Returns quote and instrument objects, which may be missing, or an unavailability
+            message. Quotes include available session metadata and previous close. Respect those
+            dates; a quote is not necessarily current. Past-date runs use only date-aware quotes
+            and may lack identity data. Prefer supplied portfolio calculations for owner amounts.
+            """
 
             async def operation():
                 if self.market_data is None:

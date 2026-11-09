@@ -157,6 +157,9 @@ class AnalysisResult(Contract):
 
 
 class ResearchNarrative(Contract):
-    executive_summary: str = Field(default="", max_length=20000)
-    sections: list[ReportSection] = Field(default_factory=list)
-    suggestions: list[str] = Field(default_factory=list, max_length=10)
+    executive_summary: str = Field(default="", max_length=20000,
+        description="Synthesis of consequential recent portfolio developments and implications; keep static portfolio description to 1-2 sentences.")
+    sections: list[ReportSection] = Field(default_factory=list,
+        description="Analytical sections adding evidence, context and portfolio implications without repeating the summary or quote table.")
+    suggestions: list[str] = Field(default_factory=list, max_length=10,
+        description="Optional portfolio adjustment ideas only when include_suggestions is true; otherwise an empty list.")

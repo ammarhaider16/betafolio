@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
-from .metrics import calculate_metrics
+from .metrics import calculate_metrics, daily_change_pct
 from .models import AnalysisRequest, AnalysisResult, PortfolioSnapshot, ReportSection
 
 
@@ -175,6 +175,7 @@ async def _analyze(request, dependencies, result, deadline, clock):
                 else None,
                 "price_session": observed,
                 "current_session": current,
+                "daily_change_pct": daily_change_pct(position.price, position.previous_close, current),
                 "asset_type": position.asset_type,
                 "instrument_name": position.instrument_name,
             }

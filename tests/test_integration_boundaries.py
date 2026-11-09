@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import httpx
 import pandas as pd
+import pytest
 from langchain_openai import ChatOpenAI
 from betafolio.engine import EngineDependencies, analyze_portfolio
 from betafolio.models import AnalysisRequest, PortfolioSnapshot, Position, Evidence
@@ -45,7 +46,8 @@ def test_calendar_selects_current_session_and_honors_weekends_and_before_open():
     assert expected_market_session(datetime(2026, 10, 18, 20, tzinfo=timezone.utc)) == "2026-10-16"
 
 
-def test_actual_sdk_can_use_tools_and_finalize_in_its_own_structure(monkeypatch):
+@pytest.mark.parametrize('mode', ['brief', 'detailed'])
+def test_actual_sdk_can_use_tools_and_finalize_in_its_own_structure(monkeypatch, mode):
     calls = []
 
     class Search:
@@ -68,9 +70,20 @@ def test_actual_sdk_can_use_tools_and_finalize_in_its_own_structure(monkeypatch)
     def respond(request):
         payload = json.loads(request.content)
         calls.append(payload)
+        system = payload['messages'][0]['content']
+        assert f'## {mode.title()} report' in system
+        other_mode = 'Detailed' if mode == 'brief' else 'Brief'
+        assert f'## {other_mode} report' not in system
+        assert ("## Owner's question" in system) == (mode == 'detailed')
         if len(calls) == 1:
+            search = next(tool['function'] for tool in payload['tools'] if tool['function']['name'] == 'search_news')
+            assert search['parameters']['properties']['query']['description']
+            initial = json.loads(payload['messages'][1]['content'])
+            assert initial['news_cutoff'] and initial['max_data_age_hours'] == 72
             name, args = "search_news", {"query": "Apple investment", "symbol": "AAPL"}
         else:
+            assert {tool['function']['name'] for tool in payload['tools']} == {'ResearchNarrative'}
+            assert 'Research tools are now unavailable' in system
             assert any(
                 message.get("role") == "tool" and message.get("tool_call_id") == "call-1"
                 for message in payload["messages"]
@@ -121,6 +134,9 @@ def test_actual_sdk_can_use_tools_and_finalize_in_its_own_structure(monkeypatch)
                 model="tool-model", api_key="test-key", http_async_client=client, max_retries=0
             )
             request = AnalysisRequest(
+                report_length=mode,
+                question='What matters next?' if mode == 'detailed' else '',
+                max_model_calls=2,
                 snapshot=PortfolioSnapshot(
                     as_of=datetime.now(timezone.utc),
                     positions=[Position(symbol="AAPL", quantity=1, price=100)],

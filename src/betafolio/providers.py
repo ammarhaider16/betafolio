@@ -552,9 +552,9 @@ class YFinanceMarketDataProvider:
         result, _ = await self.enrich_with_metadata(snapshot)
         return result
 
-    async def _info(self, symbol):
+    async def _info(self, symbol, *, fresh=False):
         cached = self._info_cache.get(symbol)
-        if cached and time.monotonic()-cached[0] < 30:
+        if not fresh and cached and time.monotonic()-cached[0] < 30:
             return cached[1]
         def fetch():
             import yfinance as yf
@@ -581,28 +581,56 @@ class YFinanceMarketDataProvider:
         return result, metadata
 
     async def quotes(self, symbols: list[str]) -> dict[str, dict]:
-        """Use timestamped regular-session quotes, falling back honestly to dated closes."""
+        """Choose the newest observation across sessions, independent of exchange hours."""
         from zoneinfo import ZoneInfo
         unique = list(dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip()))
         async def one(symbol):
             now = datetime.now(timezone.utc)
             candidate = None
+            zone = timezone.utc
             try:
                 async with asyncio.timeout(15):
-                    info = await self._info(symbol)
-                price = valid_market_price(info.get('regularMarketPrice'))
+                    info = await self._info(symbol, fresh=True)
+                try:
+                    zone = ZoneInfo(info.get('exchangeTimezoneName') or 'UTC')
+                except (ValueError, KeyError):
+                    pass
                 previous = valid_market_price(info.get('regularMarketPreviousClose',info.get('previousClose')))
-                stamp = info.get('regularMarketTime')
-                if price is not None and isinstance(stamp,(int,float)) and stamp > 0:
-                    observed = datetime.fromtimestamp(stamp,timezone.utc)
-                    zone = ZoneInfo(info.get('exchangeTimezoneName') or 'America/New_York')
-                    if observed <= now:
-                        candidate = {'price':price, 'previous_close':previous,
-                            'trading_date':observed.astimezone(zone).date().isoformat(),
-                            'quote_as_of':observed.isoformat(), 'retrieved_at':now.isoformat(),
-                            'source':'yfinance', 'valuation_type':'regular_session'}
-                        if candidate['trading_date'] >= expected_market_session(now):
-                            return symbol, candidate
+                for prefix, kind in (('regularMarket', 'regular_session'),
+                                     ('preMarket', 'pre_market'), ('postMarket', 'post_market')):
+                    price, stamp = valid_market_price(info.get(prefix+'Price')), info.get(prefix+'Time')
+                    if price is None or not isinstance(stamp, (int, float)) or not 0 < stamp <= now.timestamp():
+                        continue
+                    observed = datetime.fromtimestamp(stamp, timezone.utc)
+                    quote = {'price': price, 'previous_close': previous,
+                             'trading_date': observed.astimezone(zone).date().isoformat(),
+                             'quote_as_of': observed.isoformat(), 'retrieved_at': now.isoformat(),
+                             'source': 'yfinance', 'valuation_type': kind}
+                    if candidate is None or quote['quote_as_of'] > candidate['quote_as_of']:
+                        candidate = quote
+                if candidate and (now-datetime.fromisoformat(candidate['quote_as_of'])).total_seconds() <= 120:
+                    return symbol, candidate
+            except Exception:
+                pass
+            # A stale summary must not hide newer intraday/extended-hours trading.
+            def intraday():
+                import yfinance as yf
+                return yf.Ticker(symbol).history(period='1d', interval='1m', prepost=True,
+                                                 auto_adjust=False, timeout=10)
+            try:
+                bars = await _run_source_worker(intraday)
+                series = bars['Close'].dropna().sort_index()
+                for stamp, value in reversed(list(series.items())):
+                    observed = stamp.to_pydatetime()
+                    price = valid_market_price(value)
+                    if observed.tzinfo is None or observed > now or price is None:
+                        continue
+                    if candidate is None or observed > datetime.fromisoformat(candidate['quote_as_of']):
+                        candidate = {'price': price, 'previous_close': candidate['previous_close'] if candidate else None,
+                                     'trading_date': observed.astimezone(zone).date().isoformat(),
+                                     'quote_as_of': observed.isoformat(), 'retrieved_at': now.isoformat(),
+                                     'source': 'yfinance', 'valuation_type': 'intraday'}
+                    break
             except Exception:
                 pass
             def fetch():

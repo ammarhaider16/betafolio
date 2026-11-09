@@ -5,6 +5,16 @@ import statistics
 from .models import PortfolioSnapshot
 
 
+def daily_change_pct(price, previous_close, current_session):
+    """Return a dated security price change, never an account return."""
+    if not current_session or price is None or previous_close is None:
+        return None
+    price, previous_close = Decimal(str(price)), Decimal(str(previous_close))
+    if not price.is_finite() or not previous_close.is_finite() or price < 0 or previous_close <= 0:
+        return None
+    return float((price / previous_close - 1) * 100)
+
+
 def calculate_metrics(snapshot: PortfolioSnapshot) -> dict:
     values: dict[str, Decimal] = {}
     sectors: dict[str, Decimal] = {}

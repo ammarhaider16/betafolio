@@ -4,6 +4,17 @@ from betafolio.models import PortfolioSnapshot, Position
 from betafolio.metrics import calculate_metrics
 
 
+@pytest.mark.parametrize('price,previous,current,expected', [
+    ('110', '100', True, 10), ('90', '100', True, -10),
+    ('100', '100', True, 0), ('0', '100', True, -100),
+    (None, '100', True, None), ('100', None, True, None),
+    ('110', '100', False, None), ('100', '0', True, None),
+])
+def test_dated_security_percentage(price, previous, current, expected):
+    from betafolio.metrics import daily_change_pct
+    assert daily_change_pct(price, previous, current) == expected
+
+
 def test_decimal_values_duplicates_and_partial_coverage():
     snapshot = PortfolioSnapshot(as_of=datetime.now(timezone.utc), cash="10", positions=[
         Position(symbol="ABC", quantity="2", price="0.1", previous_close="0.05"),
