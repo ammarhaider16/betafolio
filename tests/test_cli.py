@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ def test_offline_cli_without_credentials(tmp_path):
     result = json.loads(completed.stdout)
     assert result["schema_version"] == "2.0"
     assert result["status"] == "success"
-    assert result["metrics"]["known_value"] == "19450"
+    assert Decimal(result["metrics"]["known_value"]) == 42890
     assert result["suggestions"] == []
     assert any("DEMONSTRATION PORTFOLIO" in warning for warning in result["warnings"])
 

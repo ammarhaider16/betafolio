@@ -1,30 +1,15 @@
 """FR-15 model readiness probe and endpoint checks; faked chat model, no network."""
 import asyncio
-import os
-import re
 
 import pytest
-from fastapi.testclient import TestClient
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
-from betafolio.secrets import SecretStore
 from betafolio.service import probe_model_readiness, readiness_ok
-from betafolio.web import create_app
 
 
-@pytest.fixture(autouse=True)
-def isolated_credentials(monkeypatch):
-    values = {}
-    for key in list(os.environ):
-        if key.startswith('PORTFOLIO_') or key in {'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LITELLM_API_KEY', 'TAVILY_API_KEY', 'EXA_API_KEY', 'PERPLEXITY_API_KEY'}:
-            monkeypatch.delenv(key)
-    monkeypatch.setattr(SecretStore, 'get', lambda self, name: os.environ.get('PORTFOLIO_SECRET_' + name.upper(), values.get(name)))
-    monkeypatch.setattr(SecretStore, 'set', lambda self, name, value: values.__setitem__(name, value))
-    monkeypatch.setattr(SecretStore, 'delete', lambda self, name: values.pop(name, None))
-    return values
 
 
 class FakeChatModel(BaseChatModel):
@@ -61,14 +46,8 @@ def run_probe(script):
     return asyncio.run(probe_model_readiness(None, None, model=model)), model
 
 
-def csrf(client):
-    response = client.get('/')
-    assert response.status_code == 200
-    return re.search(r'name="csrf-token" content="([^"]+)"', response.text).group(1)
 
 
-def post(client, token, path, body):
-    return client.post(path, json=body, headers={'x-csrf-token': token})
 
 
 def final_call(summary="ready"):
@@ -114,26 +93,65 @@ def test_readiness_errors_do_not_expose_provider_messages():
     assert readiness_ok("ok", "ok") and not readiness_ok("ok", "weak") and not readiness_ok("ok", "fail")
 
 
-def test_fr15_endpoint_contract(tmp_path, monkeypatch):
-    from betafolio import service as service_module
-    fake = FakeChatModel(script=[{"content":"ready"}, {"tool_calls": tool_call()}, {"tool_calls": final_call()}])
-    monkeypatch.setattr(service_module, 'create_model', lambda *args, **kwargs: fake)
-    with TestClient(create_app(tmp_path), base_url='http://127.0.0.1:8000') as client:
-        token = csrf(client)
-        # Conventions match neighboring endpoints: CSRF for owner browser writes.
-        assert client.post('/api/test/model', json={}).status_code == 403
-        response = post(client, token, '/api/test/model', {})
-        assert response.status_code == 200, response.text
-        payload = response.json()
-        assert [step['status'] for step in payload['steps']] == ['passed'] * 3
-        assert payload['ok'] is True and payload['tool_calling'] == 'ok' and payload['structured_output'] == 'ok'
-        assert isinstance(payload['detail'], str) and payload['detail']
+async def test_connection_checks_reuse_successes_retry_failures_and_keep_research_independent(monkeypatch):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from betafolio.connections import check_all, revision
+    from betafolio.production import ProductionSettings, ready, email_ready
+    from betafolio.service import ConnectionService
 
+    class Store:
+        def __init__(self):
+            self.data={'settings':ProductionSettings(email={'sender':'briefings@example.com'}).model_dump(mode='json')}
+            self.keys={}
+            self.credentials=SimpleNamespace(get=self.keys.get)
+        def get(self,key,default=None):return deepcopy(self.data.get(key,default))
+        def set(self,key,value):self.data[key]=deepcopy(value)
 
-def test_fr15_endpoint_without_key_is_an_actionable_400(tmp_path):
-    with TestClient(create_app(tmp_path), base_url='http://127.0.0.1:8000') as client:
-        response = post(client, csrf(client), '/api/test/model', {})
-        assert response.status_code == 200
-        assert not response.json()['ok']
-        assert response.json()['steps'][0]['status'] == 'failed'
-        assert all(step['status']=='skipped' for step in response.json()['steps'][1:])
+    database=Store()
+    state={'model':True,'email':True}
+    calls={'model':0,'search':0,'email':0}
+    skipped=[]
+    async def model(*args):
+        calls['model']+=1
+        return {'ok':state['model']}
+    async def search(*args,**kwargs):
+        calls['search']+=1
+        skipped.append(kwargs.get('skip',set()))
+        return {'search':{'status':'passed','tested_at':'source-check'}}
+    async def mail(*args,**kwargs):
+        calls['email']+=1
+        assert args[1]=='admin@example.com'
+        if not state['email']:
+            raise RuntimeError('Do not persist provider payload')
+    monkeypatch.setattr('betafolio.connections.probe_model_readiness',model)
+    monkeypatch.setattr('betafolio.connections.build_research',lambda *a:object())
+    monkeypatch.setattr('betafolio.providers.probe_research_sources',search)
+    monkeypatch.setattr('betafolio.mailer.send_mail',mail)
+    first=await check_all(database,'admin@example.com')
+    await check_all(database,'admin@example.com')
+    assert calls=={'model':2,'search':1,'email':1}
+    assert database.get('readiness')['email']['tested_at']==first['email']['tested_at']
+    email_revision=revision(ConnectionService(database),'email')
+    database.keys['smtp_password']='unused'
+    assert revision(ConnectionService(database),'email')==email_revision
+    database.keys['email_api_key']='changed'
+    await check_all(database,'admin@example.com')
+    assert calls['search']==1 and calls['email']==2
+    state['model']=False
+    saved=database.get('readiness')['email']
+    await check_all(database,'admin@example.com')
+    assert database.get('readiness')['email']==saved
+    state['model']=True
+    state['email']=False
+    await check_all(database,'admin@example.com',force=['email'])
+    assert ready(database) and not email_ready(database)
+    state['email']=True
+    await check_all(database,'admin@example.com')
+    assert email_ready(database) and calls['email']==4
+    # A failed optional feed is retried without re-probing the successful main search provider.
+    saved=database.get('readiness')
+    saved['search']['sources']['fed']={'status':'failed'}
+    database.set('readiness',saved)
+    await check_all(database,'admin@example.com')
+    assert skipped[-1]=={'search'} and calls['email']==4

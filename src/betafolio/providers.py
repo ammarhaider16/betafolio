@@ -1527,16 +1527,18 @@ async def _probe_call(provider, query, *, max_results=3, reporting_cutoff=None):
     return await provider.search(query, max_results=max_results)
 
 
-async def probe_research_sources(provider, symbol="AAPL", name=None) -> dict:
+async def probe_research_sources(provider, symbol="AAPL", name=None, *, skip=()) -> dict:
     """Exercise every configured adapter using its actual supported request path."""
     if provider is None:
         return {}
     if isinstance(provider, CompositeResearchProvider):
         results = {}
-        for outcomes in await asyncio.gather(*(probe_research_sources(child, symbol, name) for child in provider.providers)):
+        for outcomes in await asyncio.gather(*(probe_research_sources(child, symbol, name, skip=skip) for child in provider.providers)):
             results.update(outcomes)
         return results
     source_id = _source_id(provider)
+    if source_id in skip and not isinstance(provider, (PrimaryFeedResearchProvider, TickerNewsFeedProvider)):
+        return {}
     provider.source_outcomes = {}
     if isinstance(provider, SecFilingsResearchProvider) and not provider._enabled():
         record_outcome(provider, source_id, "skipped", "SEC filings were not checked because an identifying contact is missing or invalid")
@@ -1560,11 +1562,13 @@ async def probe_research_sources(provider, symbol="AAPL", name=None) -> dict:
         return await probe.search("", max_results=3)
 
     if isinstance(provider, PrimaryFeedResearchProvider):
-        requests = [(source, official_feed(source)) for source in provider.sources]
+        requests = [(source, official_feed(source)) for source in provider.sources if source not in skip]
     elif isinstance(provider, TickerNewsFeedProvider):
         from copy import copy
         requests = []
         for feed in provider.sources:
+            if feed in skip:
+                continue
             probe = copy(provider)
             probe._lock = asyncio.Lock()
             requests.append((feed, probe._source_entries(feed, probe._symbol_query(symbol, name), symbol, name, None)))
@@ -1575,10 +1579,10 @@ async def probe_research_sources(provider, symbol="AAPL", name=None) -> dict:
         requests = [(source_id, _probe_call(provider, query, max_results=3))]
     jobs = [bounded_probe(request, diagnostic_id) for diagnostic_id, request in requests]
     if fallback is not None:
-        jobs.append(probe_research_sources(fallback, symbol, name))
+        jobs.append(probe_research_sources(fallback, symbol, name, skip=skip))
     await asyncio.gather(*jobs)
     results = source_diagnostics(provider)
-    if not requests:
+    if not requests and not any(source in skip for source in getattr(provider, 'sources', ())):
         record_outcome(provider, source_id, "skipped", "No source feeds selected")
         results = source_diagnostics(provider)
     return results

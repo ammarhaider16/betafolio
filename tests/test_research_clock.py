@@ -107,43 +107,6 @@ async def test_model_and_tools_share_selected_clock_without_execution_date_or_li
 async def test_missing_historical_capability_does_not_reuse_saved_prices():
     result = await analyze_portfolio(AnalysisRequest(research_as_of='2020-01-03T23:00:00Z',
         snapshot=PortfolioSnapshot(as_of=datetime.now(timezone.utc),cash=100,
-                                   positions=[Position(symbol='AAPL',quantity=2,price=999)])), EngineDependencies(market_data=object()))
+                                   positions=[Position(symbol='AAPL',quantity=2,price=999)])), EngineDependencies(market_data=object(), offline=True))
     assert result.metrics['known_value'] == '100'
     assert result.metrics['position_details'][0]['price'] is None
-
-
-def test_dashboard_date_run_persists_clock_and_preserves_saved_positions(tmp_path, monkeypatch):
-    import re
-    from fastapi.testclient import TestClient
-    from betafolio.web import create_app
-    from betafolio.secrets import SecretStore
-    from betafolio.delivery import render_report
-    monkeypatch.setattr(SecretStore,'get',lambda *args: None)
-    with TestClient(create_app(tmp_path),base_url='http://127.0.0.1:8000') as client:
-        token=re.search('name="csrf-token" content="([^"]+)"',client.get('/').text).group(1)
-        headers={'x-csrf-token':token}
-        response=client.post('/api/runs',json={'source':'demo','research_date':'2099-01-01'},headers=headers)
-        assert response.status_code==400
-        assert client.get('/api/status').json()['history']==[]
-        snapshot=PortfolioSnapshot(as_of=datetime.now(timezone.utc),cash=123,positions=[Position(symbol='AAPL',quantity=2,price=999)])
-        service=client.app.state.service
-        service.store.save_snapshot(snapshot)
-        async def ready():
-            return None
-        monkeypatch.setattr(service,'ensure_research_ready',ready)
-        monkeypatch.setattr(service,'research_readiness',lambda: {'state':'ready','issues':[]})
-        monkeypatch.setattr('betafolio.service.build_dependencies',lambda *args,**kwargs: EngineDependencies())
-        response=client.post('/api/runs',json={'source':'stored','research_date':'2020-01-03'},headers=headers)
-        assert response.status_code==202
-        import time
-        for _ in range(100):
-            row=client.get(response.json()['result_url']).json()
-            if row.get('result'):
-                break
-            time.sleep(.02)
-        assert row['result']['research_as_of'].startswith('2020-01-04T04:59:59')
-        html,text=render_report(row['result'])
-        assert 'January 3, 2020' in text
-        assert row['result']['metrics']['known_value']=='123'
-        assert service.store.snapshot()==snapshot
-        assert client.get('/api/status').json()['history'][0]['research_as_of']==row['result']['research_as_of']

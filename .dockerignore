@@ -6,6 +6,13 @@
 __pycache__
 deployment-secrets
 .env
+.env.*
+build
+dist
+.github
+.agents
+.codex
+.railway
 tests
 docs
 examples

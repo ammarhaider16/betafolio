@@ -41,6 +41,7 @@ class EngineDependencies:
     instrument_resolver: Any = None
     research: Any = None
     model: Any = None
+    offline: bool = False
     history_enabled: bool = False
     hard_search_limit: int = 500
     hard_seconds_limit: int = 1800
@@ -82,6 +83,11 @@ async def analyze_portfolio(request, dependencies=None):
         }
     )
     result = AnalysisResult(snapshot_as_of=portfolio_as_of, research_as_of=clock.now)
+    if dependencies.model is None and not dependencies.offline:
+        result.status = "failed"
+        result.error = "Research requires a configured model. No briefing was generated."
+        result.coverage = {"narrative_state": "unavailable"}
+        return result
     deadline = asyncio.get_running_loop().time() + request.max_seconds
     try:
         async with asyncio.timeout(request.max_seconds):
@@ -100,7 +106,10 @@ async def analyze_portfolio(request, dependencies=None):
         result.error = "The briefing could not be completed. Please try again."
     if not result.metrics:
         result.metrics = calculate_metrics(request.snapshot)
-    if not result.executive_summary:
+    if dependencies.model and not (result.executive_summary or result.sections):
+        result.status = "failed"
+        result.error = "The research agent did not produce a briefing. Review the agent trace before trying again."
+    if not result.executive_summary and dependencies.offline:
         result.executive_summary = _portfolio_summary(result.metrics)
     result.coverage = {
         "narrative_state": "available"
@@ -238,6 +247,9 @@ async def _analyze(request, dependencies, result, deadline, clock):
         result.suggestions = narrative.suggestions if request.include_suggestions else []
         if not result.research_budget.get("analysis_written"):
             result.status = "partial"
+        elif result.research_budget.get('model_failure'):
+            result.status = 'partial'
+            result.warnings.append('A completed analyst draft was preserved after a finalization error.')
         elif dependencies.research and not result.sources:
             result.status = "partial"
             result.warnings.append(

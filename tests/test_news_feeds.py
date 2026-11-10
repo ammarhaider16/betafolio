@@ -225,20 +225,17 @@ def test_sec_filings_abstain_without_contact(monkeypatch):
 
 
 
-def test_build_dependencies_composes_official_and_news_providers(tmp_path):
-    from betafolio.secrets import SecretStore
-    from betafolio.service import build_dependencies
+def test_build_research_composes_official_and_news_providers():
+    from betafolio.service import build_research
     settings = Settings(search_provider="keyless", sec_contact="Test Contact test@example.com")
-    dependencies = build_dependencies(settings, SecretStore(tmp_path, server=True))
-    assert isinstance(dependencies.research, CompositeResearchProvider)
-    assert dependencies.research.providers[0].__class__.__name__ == "PrimaryFeedResearchProvider"
-    assert any(isinstance(provider, SecFilingsResearchProvider) for provider in dependencies.research.providers)
-    assert any(isinstance(provider, TickerNewsFeedProvider) for provider in dependencies.research.providers)
+    research = build_research(settings, {})
+    assert isinstance(research, CompositeResearchProvider)
+    assert research.providers[0].__class__.__name__ == "PrimaryFeedResearchProvider"
+    assert any(isinstance(provider, SecFilingsResearchProvider) for provider in research.providers)
+    assert any(isinstance(provider, TickerNewsFeedProvider) for provider in research.providers)
 
 
-def test_build_dependencies_disabled_has_no_research(tmp_path):
-    from betafolio.secrets import SecretStore
-    from betafolio.service import build_dependencies
+def test_build_research_disabled_has_no_research():
+    from betafolio.service import build_research
     settings = Settings(search_provider="disabled")
-    dependencies = build_dependencies(settings, SecretStore(tmp_path, server=True))
-    assert dependencies.research is None
+    assert build_research(settings, {}) is None

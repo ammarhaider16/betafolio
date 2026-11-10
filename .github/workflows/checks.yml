@@ -30,6 +30,7 @@ jobs:
         run: |
           uv run python - <<'PY'
           import json
+          from decimal import Decimal
           import os
           import subprocess
           import sys
@@ -49,5 +50,26 @@ jobs:
               assert result.returncode == 0, result.stderr
               report = json.loads(result.stdout)
               assert report["status"] == "success", report["status"]
-              assert report["metrics"]["known_value"] == "19450"
+              assert Decimal(report["metrics"]["known_value"]) == 42890
           PY
+  production-boundaries:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: betafolio
+          POSTGRES_PASSWORD: disposable-ci-password
+          POSTGRES_DB: betafolio_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U betafolio -d betafolio_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      BETAFOLIO_TEST_DATABASE_URL: postgresql+psycopg://betafolio:disposable-ci-password@127.0.0.1:5432/betafolio_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --group dev --python 3.12
+      - run: uv run pytest tests/test_production.py -q

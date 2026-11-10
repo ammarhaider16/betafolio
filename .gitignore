@@ -1,5 +1,11 @@
 # Byte-compiled / optimized / DLL files
 .tools/
+.env
+.env.*
+!.env.example
+encryption.key
+*.dump
+node_modules/
 # Keep security review artifacts local if a reviewer uses the old paths.
 /docs/security-review*.md
 /docs/security-dependency-audit*.json

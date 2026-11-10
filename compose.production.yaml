@@ -1,0 +1,11 @@
+# Optional public-host overlay: place behind an HTTPS reverse proxy and set its origin.
+services:
+  web:
+    environment:
+      PORTFOLIO_SERVER_MODE: "1"
+      BETAFOLIO_CONTAINER_LOCAL: "0"
+      PORTFOLIO_PUBLIC_URL: ${PORTFOLIO_PUBLIC_URL:?Set your HTTPS origin}
+  worker:
+    environment:
+      PORTFOLIO_SERVER_MODE: "1"
+      PORTFOLIO_PUBLIC_URL: ${PORTFOLIO_PUBLIC_URL:?Set your HTTPS origin}

@@ -1,16 +1,27 @@
-# Test scope
+# Focused regression checks
 
-Keep tests for failures that change a user decision, lose portfolio edits, expose secrets, break provider interoperability, misdate returns or duplicate delivery. Use the narrowest meaningful boundary.
+The suite covers arithmetic and date boundaries, prepared source transport, provider wire contracts, safe report rendering, imports and the autonomous research tool loop. Single-owner browser/keyring/SQLite/scheduler tests were removed with those retired features rather than preserved as compatibility requirements.
 
-- Arithmetic and pricing: exact quantities/cash, finite prices, real quote timestamps and session-calendar behavior. Retrieval time must never masquerade as observation time.
-- Model integration: the actual ChatOpenAI SDK sends a tool request, receives its result and finalizes the current report schema. Readiness uses that same schema. Mocking only the narrative function cannot establish provider compatibility.
-- News integration: mocked HTTP checks exercise real adapter payloads, extraction, publication dates and failures. Runtime checks prove prepared provider content avoids page refetches, while explicit reads and metadata-only retrieval still work. These establish adapter contracts, not live provider availability or news quality.
-- Portfolio and operations: editable imports, save boundaries, latest saved positions at schedule time, cancellation, optional delivery and idempotency.
-- Security: authorization/CSRF, safe HTML, source redirects and private-address blocking, credential isolation and email recipient restrictions.
-- Browser smoke: core editing/report behavior and small-screen layout; no snapshots of generated prose.
+`test_production.py` adds tenant/admin separation, encrypted credentials, account/session deletion, concurrent job admission/capacity, live weekend scheduling and import-column ambiguity. Its database cases are opt-in and require **BETAFOLIO_TEST_DATABASE_URL** pointing to a disposable Postgres database whose name ends in `_test`. Each case uses a generated schema and removes that schema afterward. Never point it at production.
 
-Removed suites enforced obsolete report templates, event grades, fixed search queues, publisher ranking and formatting internals. They were protecting constraints the product no longer wants. Do not replace them with assertions about exact analyst headings, prose length or call counts. Live configured-provider checks are manual workspace probes, not credential-dependent unit tests.
+When explicitly choosing to run checks:
 
-The targeted cleanup removes duplicate invalid-quantity cases and folds blank-price imports into the price-ignore contract. A purported partial-feed-failure test only exercised success and duplicated parsing coverage; it was removed. The independent-probes test now combines a stalled source with a healthy one and requires the healthy source to run before the stalled source exits. SDK round-trip and redirect tests assert behavior rather than incidental model/DNS call counts. Invalid market-data fallback must prove refresh was attempted, so simply skipping it cannot pass.
+```sh
+uv sync --frozen --group dev --python 3.12
+uv run pytest -q
+```
 
-Keep lower-level credential/transport tests and HTTP authorization/persistence tests when they protect distinct boundaries. Keep arithmetic, quote-session freshness, cancellation, saved drafts, scheduling/delivery idempotency and security checks. Do not delete safeguards to reach a test-count target or merge unrelated scenarios into one opaque test.
+Without the dedicated Postgres URL, database tests skip; that does not establish tenant or queue correctness. CI includes a separate Linux/Postgres job for those cases. No paid provider calls are required by the suite.
+
+For a manual browser acceptance pass, cover administrator bootstrap/MFA, connection setup, verified signup, editable import, research/status/report/activity, consent changes, account deletion and admin metrics without portfolio contents. Verify startup, email delivery, DST handling and a database restore in your intended deployment environment.
+
+During this migration the user requested **no application startup or test execution**. These scenarios were written but not executed by the implementation agent; only source parsing, JavaScript syntax checking and lint/static review were performed. Security-review working notes belong under ignored `.tools/`, never tracked review documents.
+
+For the restored multi-user UI, when runtime verification is permitted, also cover:
+
+- Import and ticker-change lookups preserve edited quantities, ignore stale responses after discard/removal/account changes, and batch more than 30 holdings. Lookup failure still permits saving valid holdings and cash.
+- Saved holdings return to read-only after save/discard; polling preserves drafts, and research cannot start while editing or while briefing detail is unsaved.
+- Brief/Detailed persists without changing schedule/email consent or stored profile data; save failure offers retry and blocks research.
+- Latest briefing starts collapsed, stays collapsed after completion, expands through report actions, and opens the selected run from Activity. Polling preserves disclosures and trace selection.
+- Administrator keys show saved state and provider-specific Change/Cancel/Remove controls; saving a key preserves unsaved provider settings. Connection checks remain model-first.
+- Account, MFA, administration, portfolio tables, and long trace messages fit desktop/tablet/mobile layouts; disclosures work by keyboard, and account changes clear private content.

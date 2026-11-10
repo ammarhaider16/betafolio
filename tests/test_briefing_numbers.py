@@ -51,8 +51,7 @@ def test_model_financial_facts_preserve_scale_sign_and_missing_amounts():
     assert facts['daily_change_complete'] is False
 
 
-@pytest.mark.parametrize('rewrite_clean', [True, False])
-async def test_internal_reference_rewrite_is_bounded_and_unclean_drafts_are_not_returned(rewrite_clean):
+async def test_internal_reference_cleanup_preserves_report_without_a_second_model_call():
     import json
     from datetime import datetime, timezone
     import httpx
@@ -65,9 +64,7 @@ async def test_internal_reference_rewrite_is_bounded_and_unclean_drafts_are_not_
     def respond(request):
         payload = json.loads(request.content)
         calls.append(payload)
-        summary = ('Estimated value change was +$150.22, according to Newsroom.'
-                   if len(calls) == 2 and rewrite_clean else
-                   f'daily_price_contributions show +$150.22 (source ID {source_id}).')
+        summary = f'daily_price_contributions show +$150.22 (source ID {source_id}).'
         return httpx.Response(200, json={
             'id': 'reply', 'object': 'chat.completion', 'created': 1, 'model': 'test',
             'choices': [{'index': 0, 'finish_reason': 'tool_calls', 'message': {
@@ -85,20 +82,15 @@ async def test_internal_reference_rewrite_is_bounded_and_unclean_drafts_are_not_
         narrative = await generate_narrative(model, request, {
             'daily_price_contributions': {'ABC': '150.22'}, 'known_value': '20033.06',
         }, sources, budget=budget)
-    assert len(calls) == 2
-    assert {tool['function']['name'] for tool in calls[1]['tools']} == {'ResearchNarrative'}
+    assert len(calls) == 1
     initial = json.loads(calls[0]['messages'][1]['content'])
     assert 'daily price contributions' in initial['portfolio_measures']
     assert 'daily_price_contributions' not in initial['portfolio_measures']
     assert initial['reference_material']['news'][0]['id_usage'].startswith('Tool handle')
     assert source_id not in narrative.executive_summary
     assert 'daily_price_contributions' not in narrative.executive_summary
-    if rewrite_clean:
-        assert narrative.executive_summary == 'Estimated value change was +$150.22, according to Newsroom.'
-        assert 'model_failure' not in budget
-    else:
-        assert not narrative.executive_summary
-        assert budget['model_failure']
+    assert '+$150.22' in narrative.executive_summary and 'Newsroom' in narrative.executive_summary
+    assert budget['analysis_written'] and 'model_failure' not in budget
 
 
 def test_internal_reference_matching_preserves_ordinary_prose_and_checks_all_sections():
@@ -110,3 +102,16 @@ def test_internal_reference_matching_preserves_ordinary_prose_and_checks_all_sec
     dirty = ResearchNarrative(sections=[ReportSection(heading='daily_price_contributions',
                               content='Newsroom reported earnings (source ID one).')])
     assert internal_references(dirty, sources, {'daily_price_contributions'}) == ['daily_price_contributions', 'one']
+
+
+def test_briefing_cleanup_and_exact_json_recovery_preserve_analysis():
+    from langchain_core.messages import AIMessage
+    from betafolio.agent import clean_narrative, narrative_from_output
+    from betafolio.models import Evidence, ResearchNarrative
+    source = Evidence(id='one', title='News', publisher='Newsroom', url='https://example.com')
+    draft = ResearchNarrative(executive_summary='One holding rose +$150.22 (source ID one).')
+    cleaned = clean_narrative(draft, [source], set())
+    assert cleaned.executive_summary == 'One holding rose +$150.22 (Newsroom).'
+    assert narrative_from_output({'messages':[AIMessage(content=cleaned.model_dump_json())]}) == cleaned
+    with pytest.raises(ValueError):
+        narrative_from_output({'messages':[AIMessage(content='An incomplete, unstructured draft')]})

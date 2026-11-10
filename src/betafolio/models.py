@@ -54,8 +54,8 @@ class InvestmentProfile(Contract):
     horizon: str = Field(min_length=1, max_length=500)
     risk_tolerance: str = Field(min_length=1, max_length=500)
     liquidity_needs: str = Field(min_length=1, max_length=1000)
-    allocation_targets: dict[str, float] = Field(min_length=1, max_length=30)
-    restrictions: list[str] = Field(max_length=30)
+    allocation_targets: dict[str, float] = Field(default_factory=dict, max_length=30)
+    restrictions: list[str] = Field(default_factory=list, max_length=30)
 
     @field_validator("objectives", "horizon", "risk_tolerance", "liquidity_needs")
     @classmethod

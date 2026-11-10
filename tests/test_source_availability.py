@@ -1,10 +1,9 @@
 import asyncio
-import json
 
 import pytest
 from pydantic import ValidationError
 
-from betafolio.config import Settings, load_settings
+from betafolio.config import Settings
 from betafolio import providers
 from betafolio.providers import (
     CompositeResearchProvider, PrimaryFeedResearchProvider, SecFilingsResearchProvider,
@@ -24,10 +23,6 @@ def test_contact_defaults_and_validation():
         assert error.value.errors()[0]["loc"] == ("sec_contact",)
 
 
-def test_saved_invalid_contact_is_rejected(tmp_path):
-    (tmp_path / "settings.json").write_text(json.dumps({"sec_contact": "John", "sec_company_filings_enabled": True}))
-    with pytest.raises(ValidationError):
-        load_settings(tmp_path)
 
 
 @pytest.mark.parametrize("host", ["sec.gov", "www.sec.gov", "data.sec.gov", "SEC.GOV."])

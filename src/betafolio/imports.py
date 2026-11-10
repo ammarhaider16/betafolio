@@ -79,24 +79,57 @@ def validate_portfolio_snapshot(snapshot: PortfolioSnapshot) -> PortfolioSnapsho
     )
 
 
-def parse_holdings_csv(content: str, as_of: datetime) -> CsvImportDraft:
+class ColumnMappingRequired(ValueError):
+    def __init__(self, columns, suggestions):
+        super().__init__('Choose the ticker and quantity columns')
+        self.columns, self.suggestions = columns, suggestions
+
+
+def match_headers(columns, mapping=None):
+    from difflib import SequenceMatcher
+    aliases = {
+        'symbol': {'symbol', 'ticker', 'tickersymbol', 'securitysymbol', 'stocksymbol', 'instrumentticker'},
+        'quantity': {'quantity', 'qty', 'shares', 'sharecount', 'numberofshares', 'sharesowned', 'units', 'unitsheld', 'positionquantity'},
+    }
+    normalized = [re.sub(r'[^a-z0-9]', '', name.lower()) for name in columns]
+    suggestions, selected = {}, {}
+    if mapping is not None:
+        if not isinstance(mapping, dict) or set(mapping) != {'symbol', 'quantity'} or any(not isinstance(v, int) or isinstance(v, bool) or v < 0 or v >= len(columns) for v in mapping.values()):
+            raise ValueError('Choose a ticker and quantity column')
+        if mapping['symbol'] == mapping['quantity']:
+            raise ValueError('Ticker and quantity must use different columns')
+        if any(word in normalized[mapping['quantity']] for word in ('price', 'value', 'cost')):
+            raise ValueError('Quantity must contain units held, not a price or value')
+        selected = mapping
+    else:
+        for field, names in aliases.items():
+            ranked = sorted(((max(SequenceMatcher(None, name, alias).ratio() for alias in names), index)
+                             for index, name in enumerate(normalized)), reverse=True)
+            exact = [index for index, name in enumerate(normalized) if name in names]
+            if len(exact) == 1:
+                selected[field] = exact[0]
+            elif ranked and ranked[0][0] >= .92 and (len(ranked) == 1 or ranked[0][0]-ranked[1][0] >= .12):
+                selected[field] = ranked[0][1]
+            if ranked and ranked[0][0] >= .65:
+                suggestions[field] = ranked[0][1]
+        if len(selected) != 2 or len(set(selected.values())) != 2:
+            raise ColumnMappingRequired(columns, suggestions)
+    output = [f'ignored_{index}' for index in range(len(columns))]
+    for index, name in enumerate(normalized):
+        if normalized.count(name) == 1 and name in {'assettype','sector'}:
+            output[index] = 'asset_type' if name == 'assettype' else 'sector'
+    for field, index in selected.items():
+        output[index] = field
+    return output
+
+
+def parse_holdings_csv(content: str, as_of: datetime, mapping=None) -> CsvImportDraft:
     if len(content) > 5 * 1024 * 1024:
         raise ValueError("CSV limit is 5 MB")
     if as_of.tzinfo is None:
         raise ValueError("Snapshot date must include a timezone")
     reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
-    aliases = {
-        "ticker": "symbol",
-        "shares": "quantity",
-        "share count": "quantity",
-        "current price": "price",
-        "share price": "price",
-    }
-    reader.fieldnames = [
-        aliases.get(name.strip().lower(), name.strip().lower()) for name in (reader.fieldnames or [])
-    ]
-    if not {"symbol", "quantity"}.issubset(reader.fieldnames):
-        raise ValueError("Include ticker and quantity columns (symbol and shares also work)")
+    reader.fieldnames = match_headers(reader.fieldnames or [], mapping)
     if len(reader.fieldnames) != len(set(reader.fieldnames)):
         raise ValueError("CSV has duplicate columns after matching column names")
     positions, unsupported, cash, seen = [], [], Decimal(0), set()
@@ -141,7 +174,7 @@ def parse_holdings_csv(content: str, as_of: datetime) -> CsvImportDraft:
     return CsvImportDraft(as_of=as_of, positions=positions, cash=cash, unsupported=unsupported)
 
 
-def parse_holdings_file(content: bytes, filename: str, as_of: datetime) -> CsvImportDraft:
+def parse_holdings_file(content: bytes, filename: str, as_of: datetime, mapping=None) -> CsvImportDraft:
     """Read a CSV or the first visible Excel worksheet as an editable holdings draft."""
     from pathlib import Path
     from zipfile import ZipFile
@@ -154,7 +187,7 @@ def parse_holdings_file(content: bytes, filename: str, as_of: datetime) -> CsvIm
             text = content.decode("utf-8-sig")
         except UnicodeDecodeError:
             text = content.decode("cp1252")
-        return parse_holdings_csv(text, as_of)
+        return parse_holdings_csv(text, as_of, mapping)
     if extension not in {".xlsx", ".xls"}:
         raise ValueError("Choose a CSV, XLSX or XLS file")
     rows = []
@@ -228,4 +261,4 @@ def parse_holdings_file(content: bytes, filename: str, as_of: datetime) -> CsvIm
     writer = csv.writer(stream)
     for row in rows:
         writer.writerow(["" if value is None else str(value) for value in row[:columns]])
-    return parse_holdings_csv(stream.getvalue(), as_of)
+    return parse_holdings_csv(stream.getvalue(), as_of, mapping)

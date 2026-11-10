@@ -1,48 +1,12 @@
-"""Report rendering and explicit, owner-only SMTP delivery."""
+"""Safe HTML and plain-text report rendering."""
 
 from __future__ import annotations
-from email.message import EmailMessage
 from datetime import date, datetime
 from html import escape
 import re
-import smtplib
-import ssl
-from typing import Any, Literal
+from typing import Any
 from zoneinfo import ZoneInfo
 from .metrics import daily_change_pct
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-
-class SMTPConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    host: str
-    port: int = Field(default=465, ge=1, le=65535)
-    username: str = ""
-    sender: str
-    recipient: str
-    tls_mode: Literal["implicit", "starttls"] = "implicit"
-    plain_text_only: bool = False
-    percent_only: bool = False
-
-    @field_validator("sender", "recipient")
-    @classmethod
-    def single_address(cls, value: str) -> str:
-        # Bare addresses only: no lists, display names, or header injection.
-        if not re.fullmatch(r"[^\s@<>,;:\"\\]+@[^\s@<>,;:\"\\]+\.[^\s@<>,;:\"\\]+", value):
-            raise ValueError("Enter one bare email address")
-        return value
-
-    @field_validator("host", "username")
-    @classmethod
-    def no_newlines(cls, value: str) -> str:
-        if any(c in value for c in "\r\n\x00"):
-            raise ValueError("Invalid connection setting")
-        return value
-
-
-class DeliveryOutcome(BaseModel):
-    status: Literal["sent", "failed", "uncertain"]
-    message: str
 
 
 def _data(value):
@@ -236,77 +200,3 @@ def render_report(
         + "</main></body></html>"
     )
     return html, "\n\n".join(lines)
-
-
-def _send(message: EmailMessage, config: SMTPConfig, password: str) -> DeliveryOutcome:
-    client = None
-    submitting = False
-    accepted = False
-    try:
-        context = ssl.create_default_context()
-        if config.tls_mode == "implicit":
-            client = smtplib.SMTP_SSL(config.host, config.port, timeout=30, context=context)
-        else:
-            client = smtplib.SMTP(config.host, config.port, timeout=30)
-            client.ehlo()
-            client.starttls(context=context)
-            client.ehlo()
-        if config.username:
-            client.login(config.username, password)
-        submitting = True
-        refused = client.send_message(message, from_addr=config.sender, to_addrs=[config.recipient])
-        if refused:
-            return DeliveryOutcome(status="failed", message="The mail server refused the recipient.")
-        accepted = True
-        return DeliveryOutcome(status="sent", message="The mail server accepted the message.")
-    except (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused, smtplib.SMTPDataError):
-        return DeliveryOutcome(status="failed", message="The mail server rejected the message.")
-    except (OSError, smtplib.SMTPException):
-        return DeliveryOutcome(
-            status="uncertain" if submitting and not accepted else "failed",
-            message="Delivery acceptance is uncertain; check your inbox before resending."
-            if submitting
-            else "Unable to connect or authenticate securely. Check email settings.",
-        )
-    finally:
-        if client is not None:
-            # Closing locally avoids interpreting a QUIT failure as failed delivery.
-            try:
-                client.close()
-            except OSError:
-                pass
-
-
-def send_report(
-    result: Any,
-    config: SMTPConfig,
-    password: str,
-    verified_recipient: str | None,
-    timezone: str = "America/New_York",
-) -> DeliveryOutcome:
-    if not verified_recipient or config.recipient != verified_recipient:
-        return DeliveryOutcome(
-            status="failed", message="Verify the configured owner email address before sending reports."
-        )
-    html, plain = render_report(result, config.percent_only, timezone=timezone)
-    message = EmailMessage()
-    message["Subject"] = "Your Betafolio briefing"
-    message["From"] = config.sender
-    message["To"] = config.recipient
-    message.set_content(plain)
-    if not config.plain_text_only:
-        message.add_alternative(html, subtype="html")
-    return _send(message, config, password)
-
-
-def send_verification(config: SMTPConfig, password: str, code: str) -> DeliveryOutcome:
-    if not re.fullmatch(r"[A-Za-z0-9-]{6,64}", code):
-        raise ValueError("Invalid verification code")
-    message = EmailMessage()
-    message["Subject"] = "Verify your portfolio briefing email"
-    message["From"] = config.sender
-    message["To"] = config.recipient
-    message.set_content(
-        f"Your verification code is: {code}\n\nEnter it in the dashboard to enable report delivery."
-    )
-    return _send(message, config, password)

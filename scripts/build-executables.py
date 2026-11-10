@@ -32,13 +32,12 @@ def main():
     bundle = dist / name
     shutil.copy2(ROOT / "LICENSE", bundle / "LICENSE.txt")
     (bundle / "START-HERE.txt").write_text(
-        "Betafolio private preview\n\n"
-        f"Start {'Betafolio.exe' if system == 'Windows' else 'Start Betafolio.command'} and open the local URL printed in the terminal.\n"
-        "Keep the terminal open. Stop with Ctrl+C. Scheduled research requires this process and an awake computer.\n"
-        "Extract the entire ZIP before starting. Keep all supporting files together.\n"
-        "Settings and credentials are stored separately from this folder.\n"
-        "This preview has no publisher signature. Obtain it only from the trusted project distributor.\n"
-        "macOS may block downloaded unsigned software; use the documented OS approval flow only if you trust its origin.\n",
+        "Betafolio command-line bundle\n\n"
+        "Use analyze --demo --offline for a standalone demonstration.\n"
+        "The multi-user web application additionally requires Postgres and a background worker.\n"
+        "Use the repository's Docker Compose quickstart for the complete local platform.\n"
+        "Extract the entire ZIP and keep supporting files together.\n"
+        "This preview has no publisher signature; obtain it only from a trusted distributor.\n",
         encoding="utf-8",
     )
     if system == "Darwin":

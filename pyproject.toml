@@ -1,7 +1,7 @@
 [project]
 name = "betafolio"
 version = "0.1.0"
-description = "Read-only portfolio research, a personal dashboard, and optional briefings"
+description = "Portfolio research agent and multi-user command center"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
@@ -11,7 +11,6 @@ dependencies = [
   "pydantic>=2.10,<3",
   "python-multipart>=0.0.20,<1",
   "httpx>=0.28,<1",
-  "keyring>=25,<26",
   "platformdirs>=4,<5",
   "exchange-calendars>=4.8,<5",
   "tzdata>=2025.1",
@@ -25,6 +24,14 @@ dependencies = [
   "xlrd>=2,<3",
   "defusedxml>=0.7,<1",
   "markdown-it-py>=3,<5",
+  "sqlalchemy>=2,<3",
+  "psycopg[binary]>=3,<4",
+  "alembic>=1,<2",
+  "pwdlib[argon2]>=0.3,<1",
+  "pyotp>=2.9,<3",
+  "cryptography>=46",
+  "qrcode>=8,<9",
+  "email-validator>=2,<3",
 ]
 
 [project.scripts]

@@ -6,7 +6,7 @@ import sys
 def main():
     multiprocessing.freeze_support()
     if len(sys.argv) == 1:
-        sys.argv.append("serve")
+        sys.argv.append("--help")
     from betafolio.cli import main as cli_main
     return cli_main()
 
